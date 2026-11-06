@@ -30,11 +30,14 @@ interface AttendanceLog {
   lng: number;
   timestamp: string;
   dateKey: string;
+  photoUrl?: string;
+  timeOnly: string;
 }
 
 interface PendingTelegramMessage {
   id: string;
   text: string;
+  photoUrl?: string;
 }
 
 function getDistanceInMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
@@ -51,44 +54,53 @@ function getDistanceInMeters(lat1: number, lon1: number, lat2: number, lon2: num
   return Math.round(R * c);
 }
 
-// Telegram xabarlarini o'tkazish (Internet bor bo'lsa darhol, yo'q bo'lsa navbatga saqlash)
-async function dispatchTelegramAlert(text: string) {
+async function sendTelegramPhotoAlert(text: string, photoBase64?: string) {
   const isOnline = navigator.onLine;
 
   if (isOnline) {
     let success = false;
     for (const chatId of TELEGRAM_CHAT_IDS) {
       try {
-        const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: chatId,
-            text: text,
-            parse_mode: 'HTML',
-          }),
-        });
-        if (res.ok) success = true;
+        if (photoBase64 && photoBase64.startsWith('data:image')) {
+          const res = await fetch(photoBase64);
+          const blob = await res.blob();
+          const formData = new FormData();
+          formData.append('chat_id', chatId);
+          formData.append('photo', blob, 'xodim.jpg');
+          formData.append('caption', text);
+          formData.append('parse_mode', 'HTML');
+
+          const tgRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`, {
+            method: 'POST',
+            body: formData,
+          });
+          if (tgRes.ok) success = true;
+        } else {
+          const tgRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
+          });
+          if (tgRes.ok) success = true;
+        }
       } catch (err) {
         console.error(`Telegram xatolik (${chatId}):`, err);
       }
     }
     if (!success) {
-      savePendingMessage(text);
+      savePendingMessage(text, photoBase64);
     }
   } else {
-    savePendingMessage(text);
+    savePendingMessage(text, photoBase64);
   }
 }
 
-// Oflayn xabarlarni saqlash
-function savePendingMessage(text: string) {
+function savePendingMessage(text: string, photoUrl?: string) {
   const pending: PendingTelegramMessage[] = JSON.parse(localStorage.getItem('pending_telegram_msgs') || '[]');
-  pending.push({ id: Date.now().toString(), text });
+  pending.push({ id: Date.now().toString(), text, photoUrl });
   localStorage.setItem('pending_telegram_msgs', JSON.stringify(pending));
 }
 
-// Internet yonganda to'planib qolgan xabarlarni Telegramga yuborish
 async function flushPendingMessages() {
   if (!navigator.onLine) return;
   const pending: PendingTelegramMessage[] = JSON.parse(localStorage.getItem('pending_telegram_msgs') || '[]');
@@ -100,16 +112,29 @@ async function flushPendingMessages() {
     let sent = false;
     for (const chatId of TELEGRAM_CHAT_IDS) {
       try {
-        const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: chatId,
-            text: `${item.text}\n\n<i>📡 (Oflayn rejimda qayd etilgan, internet yongach yuborildi)</i>`,
-            parse_mode: 'HTML',
-          }),
-        });
-        if (res.ok) sent = true;
+        const fullText = `${item.text}\n\n<i>📡 (Oflayn rejimda qayd etilgan)</i>`;
+        if (item.photoUrl && item.photoUrl.startsWith('data:image')) {
+          const res = await fetch(item.photoUrl);
+          const blob = await res.blob();
+          const formData = new FormData();
+          formData.append('chat_id', chatId);
+          formData.append('photo', blob, 'xodim.jpg');
+          formData.append('caption', fullText);
+          formData.append('parse_mode', 'HTML');
+
+          const tgRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`, {
+            method: 'POST',
+            body: formData,
+          });
+          if (tgRes.ok) sent = true;
+        } else {
+          const tgRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, text: fullText, parse_mode: 'HTML' }),
+          });
+          if (tgRes.ok) sent = true;
+        }
       } catch (err) {
         console.error("Qayta yuborishda xato:", err);
       }
@@ -190,55 +215,60 @@ export default function App() {
 
         const isInside = dist <= COLLEGE_CONFIG.radiusMeters;
         const now = new Date();
-        const timeString = now.toLocaleTimeString();
+        const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const timeOnly = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         const dateKey = now.toISOString().split('T')[0];
 
         const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
         const todayUserLogs = existingLogs.filter(l => l.pinfl === profile.pinfl && l.dateKey === dateKey);
+        
         const hasCheckedInToday = todayUserLogs.some(l => l.status.includes('Keldi') || l.status.includes('Kechikdi'));
+        const hasCheckedOutToday = todayUserLogs.some(l => l.status.includes('Ketdi'));
 
-        if (isInside && !insideZone) {
+        if (isInside) {
           setInsideZone(true);
-          
-          const hours = now.getHours();
-          const minutes = now.getMinutes();
-          const totalMinutes = hours * 60 + minutes;
-          const limitMinutes = 8 * 60 + 30; // 08:30
-
-          let statusText = '🟢 O\'z vaqtida keldi';
-          let telegramMsg = `<b>🟢 DAVOMAT: KELDI</b>\n\n👤 <b>Xodim:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}\n📍 <b>Holat:</b> O'z vaqtida keldi`;
-
-          if (totalMinutes > limitMinutes) {
-            statusText = '⚠️ Kechikib keldi (08:30 dan keyin)';
-            telegramMsg = `<b>⚠️ OGOHLANTIRISH: KECHIKDI!</b>\n\n👤 <b>Xodim:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}\n❗ <b>Izoh:</b> 08:30 dan keyin keldi`;
-          }
+          setAttendanceStatus(`🎉 Tabriklaymiz, siz ishxona (texnikum) hududidasiz! (${timeOnly})`);
 
           if (!hasCheckedInToday) {
-            setAttendanceStatus(statusText);
+            const hours = now.getHours();
+            const minutes = now.getMinutes();
+            const totalMinutes = hours * 60 + minutes;
+            const limitMinutes = 8 * 60 + 30; // 08:30
+
+            let statusText = `${timeOnly} – O'z vaqtida keldi`;
+            let telegramMsg = `<b>🟢 DAVOMAT: KELDI</b>\n\n👤 <b>Xodim:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}\n📍 <b>Holat:</b> O'z vaqtida keldi`;
+
+            if (totalMinutes > limitMinutes) {
+              statusText = `${timeOnly} – Kechikib keldi (08:30 dan keyin)`;
+              telegramMsg = `<b>⚠️ OGOHLANTIRISH: KECHIKDI!</b>\n\n👤 <b>Xodim:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}\n❗ <b>Izoh:</b> 08:30 dan keyin keldi`;
+            }
+
             setLastCheckTime(timeString);
-            saveAttendanceRecord(profile, statusText, latitude, longitude, dateKey);
-            dispatchTelegramAlert(telegramMsg);
+            saveAttendanceRecord(profile, statusText, latitude, longitude, dateKey, timeOnly);
+            sendTelegramPhotoAlert(telegramMsg, profile.photoUrl);
           }
-        } else if (!isInside && insideZone) {
+        } else {
           setInsideZone(false);
+          setAttendanceStatus(`⚠️ Siz texnikum hududidan tashqaridasiz (${timeOnly})`);
 
-          const hours = now.getHours();
-          const minutes = now.getMinutes();
-          const totalMinutes = hours * 60 + minutes;
-          const endWorkMinutes = 16 * 60; // 16:00
+          if (hasCheckedInToday && !hasCheckedOutToday) {
+            const hours = now.getHours();
+            const minutes = now.getMinutes();
+            const totalMinutes = hours * 60 + minutes;
+            const endWorkMinutes = 16 * 60; // 16:00
 
-          let statusText = '🔴 Vaqtida chiqib ketdi (Ish tugadi)';
-          let telegramMsg = `<b>🔴 DAVOMAT: KETDI</b>\n\n👤 <b>Xodim:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}`;
+            let statusText = `${timeOnly} – Vaqtida chiqib ketdi (Ish tugadi)`;
+            let telegramMsg = `<b>🔴 DAVOMAT: KETDI</b>\n\n👤 <b>Xodim:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}`;
 
-          if (totalMinutes < endWorkMinutes) {
-            statusText = '🚨 Ruxsatsiz chiqib ketdi (16:00 gacha)';
-            telegramMsg = `<b>🚨 SHOSHILINCH ALERT! RUXSATSIZ CHIQIB KETDI!</b>\n\n👤 <b>Xodim:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}\n⚠️ <b>Izoh:</b> Ish vaqti tugamasdan (16:00 gacha) hududdan chiqdi!`;
+            if (totalMinutes < endWorkMinutes) {
+              statusText = `${timeOnly} – Ruxsatsiz chiqib ketdi (16:00 gacha)`;
+              telegramMsg = `<b>🚨 SHOSHILINCH ALERT! RUXSATSIZ CHIQIB KETDI!</b>\n\n👤 <b>Xodim:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}\n⚠️ <b>Izoh:</b> Ish vaqti tugamasdan (16:00 gacha) hududdan chiqdi!`;
+            }
+
+            setLastCheckTime(timeString);
+            saveAttendanceRecord(profile, statusText, latitude, longitude, dateKey, timeOnly);
+            sendTelegramPhotoAlert(telegramMsg, profile.photoUrl);
           }
-
-          setAttendanceStatus(statusText);
-          setLastCheckTime(timeString);
-          saveAttendanceRecord(profile, statusText, latitude, longitude, dateKey);
-          dispatchTelegramAlert(telegramMsg);
         }
       },
       (error) => console.error('GPS Xato:', error),
@@ -248,7 +278,7 @@ export default function App() {
     return () => navigator.geolocation.clearWatch(watchId);
   }, [profile, insideZone, activeTab]);
 
-  const saveAttendanceRecord = (user: UserProfile, status: string, lat: number, lng: number, dateKey: string) => {
+  const saveAttendanceRecord = (user: UserProfile, status: string, lat: number, lng: number, dateKey: string, timeOnly: string) => {
     const record: AttendanceLog = {
       pinfl: user.pinfl,
       name: user.fullName,
@@ -257,6 +287,8 @@ export default function App() {
       lng,
       timestamp: new Date().toLocaleString(),
       dateKey,
+      photoUrl: user.photoUrl,
+      timeOnly,
     };
     const history = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
     history.push(record);
@@ -309,6 +341,24 @@ export default function App() {
       localStorage.removeItem('persistent_attendance_logs');
       loadLogs();
     }
+  };
+
+  // CSV formatida fayl qilib yuklab olish funksiyasi
+  const handleExportCSV = () => {
+    if (attendanceLogs.length === 0) {
+      alert("Yuklab olish uchun ma'lumotlar mavjud emas!");
+      return;
+    }
+    const headers = "JSHR,F.I.Sh,Holat,Sana va Vaqt,GPS\n";
+    const rows = attendanceLogs.map(l => `"${l.pinfl}","${l.name}","${l.status}","${l.timestamp}","${l.lat.toFixed(4)}, ${l.lng.toFixed(4)}"`).join("\n");
+    const blob = new Blob(["\uFEFF" + headers + rows], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `Texnikum_Davomati_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   return (
@@ -393,7 +443,7 @@ export default function App() {
                         type="text"
                         value={nameInput}
                         onChange={(e) => setNameInput(e.target.value)}
-                        placeholder="Aliyev Vali"
+                        placeholder="Jurayeva Durdona"
                         className="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-teal-500 shadow-inner"
                         required
                       />
@@ -454,7 +504,7 @@ export default function App() {
 
                   <div className={`p-4 rounded-2xl border shadow-md transition-all ${insideZone ? 'bg-emerald-950/40 border-emerald-500/50 text-emerald-300' : 'bg-rose-950/40 border-rose-500/50 text-rose-300'}`}>
                     <div className="text-sm font-bold">{attendanceStatus}</div>
-                    {lastCheckTime && <div className="text-xs opacity-80 mt-1 font-mono">Vaqt: {lastCheckTime}</div>}
+                    {lastCheckTime && <div className="text-xs opacity-80 mt-1 font-mono">Oxirgi harakat vaqti: {lastCheckTime}</div>}
                   </div>
                 </div>
               )}
@@ -476,24 +526,34 @@ export default function App() {
 
         {activeTab === 'sqlite' && (
           <div className="bg-slate-900/80 backdrop-blur-xl border border-slate-800/80 rounded-3xl p-6 shadow-2xl space-y-4">
-            <div className="flex justify-between items-center">
+            <div className="flex justify-between items-center flex-wrap gap-2">
               <h2 className="text-base font-bold text-white">Doimiy Davomat Jurnali</h2>
-              <button onClick={handleClearLogs} className="text-xs text-rose-400 hover:underline font-medium">Tarixni tozalash</button>
+              <div className="flex space-x-3">
+                <button onClick={handleExportCSV} className="text-xs bg-teal-600 hover:bg-teal-500 text-white px-3 py-1.5 rounded-xl font-medium shadow-md">
+                  📥 Excel/CSV yuklab olish
+                </button>
+                <button onClick={handleClearLogs} className="text-xs text-rose-400 hover:underline font-medium">Tarixni tozalash</button>
+              </div>
             </div>
             <div className="space-y-2.5 max-h-[450px] overflow-y-auto pr-1">
               {attendanceLogs.length === 0 ? (
                 <p className="text-xs text-slate-500 text-center py-8">Hozircha davomat yozuvlari mavjud emas.</p>
               ) : (
                 attendanceLogs.map((log, index) => (
-                  <div key={index} className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80 text-xs space-y-1 shadow-sm">
-                    <div className="flex justify-between font-bold text-white">
-                      <span>{log.name}</span>
-                      <span className={log.status.includes('O\'z vaqtida') ? 'text-emerald-400' : 'text-rose-400'}>{log.status}</span>
-                    </div>
-                    <div className="text-slate-400 font-mono text-[10px]">JSHR: {log.pinfl}</div>
-                    <div className="text-slate-500 text-[10px] flex justify-between">
-                      <span>Vaqt: {log.timestamp}</span>
-                      <span>GPS: {log.lat.toFixed(4)}, {log.lng.toFixed(4)}</span>
+                  <div key={index} className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80 text-xs flex items-center space-x-3 shadow-sm">
+                    {log.photoUrl && (
+                      <img src={log.photoUrl} alt={log.name} className="w-12 h-12 rounded-xl object-cover border border-teal-500/50 flex-shrink-0" />
+                    )}
+                    <div className="flex-1 space-y-1 overflow-hidden">
+                      <div className="flex justify-between font-bold text-white">
+                        <span className="truncate">{log.name}</span>
+                        <span className={log.status.includes('O\'z vaqtida') ? 'text-emerald-400' : 'text-rose-400'}>{log.status}</span>
+                      </div>
+                      <div className="text-slate-400 font-mono text-[10px]">JSHR: {log.pinfl}</div>
+                      <div className="text-slate-500 text-[10px] flex justify-between">
+                        <span>Vaqt: {log.timestamp}</span>
+                        <span>GPS: {log.lat.toFixed(4)}, {log.lng.toFixed(4)}</span>
+                      </div>
                     </div>
                   </div>
                 ))
@@ -534,14 +594,19 @@ export default function App() {
               </form>
             ) : (
               <div className="space-y-4">
-                <div className="flex justify-between items-center">
+                <div className="flex justify-between items-center flex-wrap gap-2">
                   <div>
                     <h2 className="text-base font-bold text-white">🛡️ Admin Boshqaruv Paneli</h2>
-                    <p className="text-xs text-slate-400">Barcha xodimlarning kechikish va ruxsatsiz chiqish tarixi</p>
+                    <p className="text-xs text-slate-400">Barcha xodimlarning tarixi (rasmlari va Excel yuklash bilan)</p>
                   </div>
-                  <button onClick={() => setIsAuthenticatedAdmin(false)} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 rounded-xl font-medium">
-                    Chiqish
-                  </button>
+                  <div className="flex space-x-2">
+                    <button onClick={handleExportCSV} className="px-3 py-1.5 bg-teal-600 hover:bg-teal-500 text-xs text-white rounded-xl font-medium shadow-md">
+                      📥 Excel yuklab olish
+                    </button>
+                    <button onClick={() => setIsAuthenticatedAdmin(false)} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 rounded-xl font-medium">
+                      Chiqish
+                    </button>
+                  </div>
                 </div>
 
                 <div className="space-y-2.5 max-h-[450px] overflow-y-auto pr-1">
@@ -549,15 +614,20 @@ export default function App() {
                     <p className="text-xs text-slate-500 text-center py-8">Hozircha yozuvlar mavjud emas.</p>
                   ) : (
                     attendanceLogs.map((log, index) => (
-                      <div key={index} className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80 text-xs space-y-1 shadow-sm">
-                        <div className="flex justify-between font-bold text-white">
-                          <span>{log.name}</span>
-                          <span className={log.status.includes('O\'z vaqtida') ? 'text-emerald-400' : 'text-rose-400'}>{log.status}</span>
-                        </div>
-                        <div className="text-slate-400 font-mono text-[10px]">JSHR: {log.pinfl}</div>
-                        <div className="text-slate-500 text-[10px] flex justify-between">
-                          <span>Vaqt: {log.timestamp}</span>
-                          <span>GPS: {log.lat.toFixed(4)}, {log.lng.toFixed(4)}</span>
+                      <div key={index} className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80 text-xs flex items-center space-x-3 shadow-sm">
+                        {log.photoUrl && (
+                          <img src={log.photoUrl} alt={log.name} className="w-12 h-12 rounded-xl object-cover border border-rose-500/50 flex-shrink-0" />
+                        )}
+                        <div className="flex-1 space-y-1 overflow-hidden">
+                          <div className="flex justify-between font-bold text-white">
+                            <span className="truncate">{log.name}</span>
+                            <span className={log.status.includes('O\'z vaqtida') ? 'text-emerald-400' : 'text-rose-400'}>{log.status}</span>
+                          </div>
+                          <div className="text-slate-400 font-mono text-[10px]">JSHR: {log.pinfl}</div>
+                          <div className="text-slate-500 text-[10px] flex justify-between">
+                            <span>Vaqt: {log.timestamp}</span>
+                            <span>GPS: {log.lat.toFixed(4)}, {log.lng.toFixed(4)}</span>
+                          </div>
                         </div>
                       </div>
                     ))
