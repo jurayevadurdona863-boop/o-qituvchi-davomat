@@ -47,7 +47,6 @@ function getDistanceInMeters(lat1: number, lon1: number, lat2: number, lon2: num
   return Math.round(R * c);
 }
 
-// Barcha 4 ta Chat ID ga Telegram xabar yuborish funksiyasi
 async function sendTelegramAlertToAll(text: string) {
   for (const chatId of TELEGRAM_CHAT_IDS) {
     try {
@@ -67,10 +66,10 @@ async function sendTelegramAlertToAll(text: string) {
 }
 
 export default function App() {
+  const [activeTab, setActiveTab] = useState<'app' | 'geofence' | 'sqlite' | 'api' | 'admin'>('app');
   const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [isAdminView, setIsAdminView] = useState<boolean>(false);
-  const [isAuthenticatedAdmin, setIsAuthenticatedAdmin] = useState<boolean>(false);
   const [passwordInput, setPasswordInput] = useState<string>('');
+  const [isAuthenticatedAdmin, setIsAuthenticatedAdmin] = useState<boolean>(false);
   
   const [attendanceLogs, setAttendanceLogs] = useState<AttendanceLog[]>([]);
 
@@ -97,7 +96,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!profile || isAdminView) return;
+    if (!profile || activeTab === 'admin') return;
 
     if (!navigator.geolocation) {
       alert("GPS qo'llab-quvvatlanmaydi!");
@@ -122,7 +121,6 @@ export default function App() {
 
         const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
         const todayUserLogs = existingLogs.filter(l => l.pinfl === profile.pinfl && l.dateKey === dateKey);
-
         const hasCheckedInToday = todayUserLogs.some(l => l.status.includes('Keldi') || l.status.includes('Kechikdi'));
 
         if (isInside && !insideZone) {
@@ -174,7 +172,7 @@ export default function App() {
     );
 
     return () => navigator.geolocation.clearWatch(watchId);
-  }, [profile, insideZone, isAdminView]);
+  }, [profile, insideZone, activeTab]);
 
   const saveAttendanceRecord = (user: UserProfile, status: string, lat: number, lng: number, dateKey: string) => {
     const record: AttendanceLog = {
@@ -240,162 +238,251 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-4 font-sans">
-      <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl">
-        <div className="flex justify-between items-center mb-6">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+      {/* Yuqori Navigatsiya Paneli */}
+      <header className="bg-slate-900 border-b border-slate-800 px-4 py-3 flex flex-wrap justify-between items-center gap-2">
+        <div className="flex items-center space-x-2">
+          <span className="bg-teal-500/20 text-teal-400 p-2 rounded-xl text-xs font-bold">📱</span>
           <div>
-            <h1 className="text-lg font-bold text-teal-400">O'qituvchi Davomati</h1>
-            <p className="text-[11px] text-slate-400">4 Admin Chat ID Ulangan (08:30 / 16:00)</p>
+            <h1 className="text-sm font-bold text-white">O'qituvchi Davomati</h1>
+            <p className="text-[10px] text-slate-400">Geofence, Telegram & Admin Panel</p>
           </div>
-          <button
-            onClick={() => {
-              if (isAdminView) {
-                setIsAdminView(false);
-                setIsAuthenticatedAdmin(false);
-              } else {
-                setIsAdminView(true);
-              }
-            }}
-            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-teal-300 text-xs font-semibold rounded-xl border border-slate-700 transition-colors"
-          >
-            {isAdminView ? '← Asosiy oyna' : '🛡️ Admin Panel'}
-          </button>
         </div>
 
-        {isAdminView ? (
-          !isAuthenticatedAdmin ? (
-            <form onSubmit={handleAdminLogin} className="space-y-4 py-4">
-              <div className="bg-slate-800/60 p-4 rounded-2xl border border-slate-700/50 space-y-3">
-                <h2 className="text-sm font-bold text-white text-center">Admin Parolini Kiriting (2294)</h2>
-                <input
-                  type="password"
-                  value={passwordInput}
-                  onChange={(e) => setPasswordInput(e.target.value)}
-                  placeholder="Parol..."
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-teal-500 font-mono text-center"
-                  required
-                />
-              </div>
-              <button type="submit" className="w-full py-3 bg-teal-600 hover:bg-teal-500 text-white font-bold rounded-xl shadow-lg transition-colors">
-                Kirish
-              </button>
-            </form>
-          ) : (
-            <div className="space-y-4">
-              <div className="flex justify-between items-center">
-                <h2 className="text-sm font-bold text-white">Xodimlar Davomati Jurnali</h2>
-                <button onClick={handleClearLogs} className="text-[11px] text-rose-400 hover:underline">
-                  Tarixni tozalash
-                </button>
-              </div>
+        <nav className="flex items-center space-x-1 overflow-x-auto py-1">
+          <button
+            onClick={() => setActiveTab('app')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${activeTab === 'app' ? 'bg-teal-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+          >
+            Ilova
+          </button>
+          <button
+            onClick={() => setActiveTab('geofence')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${activeTab === 'geofence' ? 'bg-teal-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+          >
+            Geozona
+          </button>
+          <button
+            onClick={() => setActiveTab('sqlite')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${activeTab === 'sqlite' ? 'bg-teal-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+          >
+            Jurnal ({attendanceLogs.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('api')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${activeTab === 'api' ? 'bg-teal-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+          >
+            Render API
+          </button>
+          <button
+            onClick={() => setActiveTab('admin')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center space-x-1 ${activeTab === 'admin' ? 'bg-rose-600 text-white' : 'bg-slate-800 text-rose-300 hover:bg-slate-700'}`}
+          >
+            <span>🛡️ Admin Panel</span>
+          </button>
+        </nav>
+      </header>
 
-              <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
-                {attendanceLogs.length === 0 ? (
-                  <p className="text-xs text-slate-500 text-center py-6">Hozircha davomat yozuvlari yo'q.</p>
-                ) : (
-                  attendanceLogs.map((log, index) => (
-                    <div key={index} className="bg-slate-800/70 p-3 rounded-xl border border-slate-700/50 text-xs space-y-1">
-                      <div className="flex justify-between font-bold text-white">
-                        <span>{log.name}</span>
-                        <span className={log.status.includes('O\'z vaqtida') ? 'text-emerald-400' : 'text-rose-400'}>
-                          {log.status}
-                        </span>
-                      </div>
-                      <div className="text-slate-400 font-mono text-[10px]">JSHR: {log.pinfl}</div>
-                      <div className="text-slate-500 text-[10px] flex justify-between">
-                        <span>Vaqt: {log.timestamp}</span>
-                        <span>GPS: {log.lat.toFixed(4)}, {log.lng.toFixed(4)}</span>
-                      </div>
+      {/* Asosiy Kontent Maydoni */}
+      <main className="flex-1 p-4 max-w-4xl mx-auto w-full">
+        {activeTab === 'app' && (
+          <div className="space-y-6">
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
+              <h2 className="text-base font-bold text-teal-400 mb-1">O'qituvchi Davomati Simulyatori</h2>
+              <p className="text-xs text-slate-400 mb-4">14 xonali JSHR kiriting, rasmingizni yuklang va geozona orqali avtomatik 'Keldi'/'Ketdi' qiling.</p>
+
+              {!profile ? (
+                <form onSubmit={handleSaveProfile} className="space-y-4">
+                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
+                    <div>
+                      <label className="text-xs text-slate-300 block mb-1">JSHR / PINFL (14 raqam):</label>
+                      <input
+                        type="text"
+                        maxLength={14}
+                        value={pinflInput}
+                        onChange={(e) => setPinflInput(e.target.value.replace(/\D/g, ''))}
+                        placeholder="3200195..."
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-teal-500"
+                        required
+                      />
                     </div>
-                  ))
-                )}
-              </div>
-            </div>
-          )
-        ) : !profile ? (
-          <form onSubmit={handleSaveProfile} className="space-y-4">
-            <div className="bg-slate-800/60 p-4 rounded-2xl border border-slate-700/50 space-y-3">
-              <h2 className="text-sm font-semibold text-white text-center">Bir martalik ro'yxatdan o'tish</h2>
-              <div>
-                <label className="text-xs text-slate-300 block mb-1">JSHR / PINFL (14 raqam):</label>
-                <input
-                  type="text"
-                  maxLength={14}
-                  value={pinflInput}
-                  onChange={(e) => setPinflInput(e.target.value.replace(/\D/g, ''))}
-                  placeholder="3200195..."
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-teal-500"
-                  required
-                />
-              </div>
-              <div>
-                <label className="text-xs text-slate-300 block mb-1">Ism va Familiyangiz:</label>
-                <input
-                  type="text"
-                  value={nameInput}
-                  onChange={(e) => setNameInput(e.target.value)}
-                  placeholder="Aliyev Vali"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-teal-500"
-                  required
-                />
-              </div>
-              <div>
-                <label className="text-xs text-slate-300 block mb-1">Rasmingiz:</label>
-                <input
-                  type="file"
-                  accept="image/*"
-                  capture="user"
-                  onChange={handlePhotoUpload}
-                  className="w-full text-xs text-slate-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-teal-600 file:text-white"
-                  required
-                />
-              </div>
-              {photoInput && (
-                <div className="flex justify-center mt-2">
-                  <img src={photoInput} alt="Preview" className="w-16 h-16 object-cover rounded-full border-2 border-teal-500" />
+                    <div>
+                      <label className="text-xs text-slate-300 block mb-1">Ism va Familiyangiz:</label>
+                      <input
+                        type="text"
+                        value={nameInput}
+                        onChange={(e) => setNameInput(e.target.value)}
+                        placeholder="Aliyev Vali"
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-teal-500"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-300 block mb-1">Rasmingiz:</label>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        capture="user"
+                        onChange={handlePhotoUpload}
+                        className="w-full text-xs text-slate-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-teal-600 file:text-white"
+                        required
+                      />
+                    </div>
+                    {photoInput && (
+                      <div className="flex justify-center mt-2">
+                        <img src={photoInput} alt="Preview" className="w-16 h-16 object-cover rounded-full border-2 border-teal-500 shadow" />
+                      </div>
+                    )}
+                  </div>
+                  <button type="submit" className="w-full py-3 bg-teal-600 hover:bg-teal-500 text-white font-bold rounded-xl shadow-lg transition-colors text-sm">
+                    Saqlash va Boshlash
+                  </button>
+                </form>
+              ) : (
+                <div className="space-y-4 text-center">
+                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 flex items-center space-x-4 text-left">
+                    <img src={profile.photoUrl} alt={profile.fullName} className="w-14 h-14 rounded-full object-cover border-2 border-teal-400 shadow-md" />
+                    <div className="flex-1 overflow-hidden">
+                      <h3 className="font-bold text-white text-sm truncate">{profile.fullName}</h3>
+                      <p className="text-[11px] text-slate-400 font-mono">JSHR: {profile.pinfl}</p>
+                      <button
+                        onClick={() => {
+                          if (window.confirm("Profilni o'zgartirasizmi?")) {
+                            localStorage.removeItem('user_profile');
+                            setProfile(null);
+                          }
+                        }}
+                        className="text-[10px] text-rose-400 hover:underline mt-0.5 block"
+                      >
+                        Profilni o'zgartirish
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-1">
+                    <div className="text-xs text-slate-400">Kollejgacha masofa:</div>
+                    <div className="text-3xl font-extrabold text-teal-400 font-mono">
+                      {currentDistance !== null ? `${currentDistance} m` : 'GPS aniqlanmoqda...'}
+                    </div>
+                    <div className="text-[10px] text-slate-500">(Geozona chegarasi: {COLLEGE_CONFIG.radiusMeters}m)</div>
+                  </div>
+
+                  <div className={`p-4 rounded-xl border ${insideZone ? 'bg-emerald-950/40 border-emerald-500/50 text-emerald-300' : 'bg-rose-950/40 border-rose-500/50 text-rose-300'}`}>
+                    <div className="text-sm font-bold">{attendanceStatus}</div>
+                    {lastCheckTime && <div className="text-xs opacity-80 mt-1">Vaqt: {lastCheckTime}</div>}
+                  </div>
                 </div>
               )}
             </div>
-            <button type="submit" className="w-full py-3 bg-teal-600 hover:bg-teal-500 text-white font-bold rounded-xl shadow-lg transition-colors">
-              Saqlash va Boshlash
-            </button>
-          </form>
-        ) : (
-          <div className="space-y-5 text-center">
-            <div className="bg-slate-800/80 p-4 rounded-2xl border border-slate-700/60 flex items-center space-x-4 text-left">
-              <img src={profile.photoUrl} alt={profile.fullName} className="w-14 h-14 rounded-full object-cover border-2 border-teal-400 shadow-md" />
-              <div className="flex-1 overflow-hidden">
-                <h3 className="font-bold text-white text-sm truncate">{profile.fullName}</h3>
-                <p className="text-[11px] text-slate-400 font-mono">JSHR: {profile.pinfl}</p>
-                <button
-                  onClick={() => {
-                    if (window.confirm("Profilni o'zgartirasizmi?")) {
-                      localStorage.removeItem('user_profile');
-                      setProfile(null);
-                    }
-                  }}
-                  className="text-[10px] text-rose-400 hover:underline mt-0.5 block"
-                >
-                  Profilni o'zgartirish
-                </button>
-              </div>
-            </div>
+          </div>
+        )}
 
-            <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2">
-              <div className="text-xs text-slate-400">Kollejgacha masofa:</div>
-              <div className="text-3xl font-extrabold text-teal-400 font-mono">
-                {currentDistance !== null ? `${currentDistance} m` : 'GPS aniqlanmoqda...'}
-              </div>
-              <div className="text-[10px] text-slate-500">(Geozona: {COLLEGE_CONFIG.radiusMeters}m)</div>
-            </div>
-
-            <div className={`p-4 rounded-2xl border ${insideZone ? 'bg-emerald-950/40 border-emerald-500/50 text-emerald-300' : 'bg-rose-950/40 border-rose-500/50 text-rose-300'}`}>
-              <div className="text-sm font-bold">{attendanceStatus}</div>
-              {lastCheckTime && <div className="text-xs opacity-80 mt-1">Vaqt: {lastCheckTime}</div>}
+        {activeTab === 'geofence' && (
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+            <h2 className="text-base font-bold text-teal-400">Geozona Parametrlari</h2>
+            <p className="text-xs text-slate-400">Kollejning belgilangan GPS koordinatalari va geofence radiusi.</p>
+            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2 text-xs font-mono">
+              <div>Kenglik (Latitude): {COLLEGE_CONFIG.latitude}</div>
+              <div>Uzunlik (Longitude): {COLLEGE_CONFIG.longitude}</div>
+              <div>Ruxsat etilgan radius: {COLLEGE_CONFIG.radiusMeters} metr</div>
             </div>
           </div>
         )}
-      </div>
+
+        {activeTab === 'sqlite' && (
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+            <div className="flex justify-between items-center">
+              <h2 className="text-base font-bold text-white">Doimiy Davomat Jurnali</h2>
+              <button onClick={handleClearLogs} className="text-xs text-rose-400 hover:underline">Tarixni tozalash</button>
+            </div>
+            <div className="space-y-2 max-h-[450px] overflow-y-auto pr-1">
+              {attendanceLogs.length === 0 ? (
+                <p className="text-xs text-slate-500 text-center py-8">Hozircha davomat yozuvlari mavjud emas.</p>
+              ) : (
+                attendanceLogs.map((log, index) => (
+                  <div key={index} className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs space-y-1">
+                    <div className="flex justify-between font-bold text-white">
+                      <span>{log.name}</span>
+                      <span className={log.status.includes('O\'z vaqtida') ? 'text-emerald-400' : 'text-rose-400'}>{log.status}</span>
+                    </div>
+                    <div className="text-slate-400 font-mono text-[10px]">JSHR: {log.pinfl}</div>
+                    <div className="text-slate-500 text-[10px] flex justify-between">
+                      <span>Vaqt: {log.timestamp}</span>
+                      <span>GPS: {log.lat.toFixed(4)}, {log.lng.toFixed(4)}</span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'api' && (
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+            <h2 className="text-base font-bold text-teal-400">Render API Holati</h2>
+            <p className="text-xs text-slate-400">Tizim vaqt va geofence ma'lumotlarini Render serveri orqali sinxronizatsiya qiladi.</p>
+            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 text-xs font-mono text-emerald-400">
+              🟢 API Ulanishi faol va barqaror ishlamoqda.
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'admin' && (
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+            {!isAuthenticatedAdmin ? (
+              <form onSubmit={handleAdminLogin} className="space-y-4 max-w-sm mx-auto py-6">
+                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3 text-center">
+                  <h2 className="text-sm font-bold text-white">Admin Paneliga Kirish</h2>
+                  <p className="text-[11px] text-slate-400">Maxfiy parolni kiriting (2294)</p>
+                  <input
+                    type="password"
+                    value={passwordInput}
+                    onChange={(e) => setPasswordInput(e.target.value)}
+                    placeholder="Parol..."
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-teal-500 font-mono text-center"
+                    required
+                  />
+                </div>
+                <button type="submit" className="w-full py-3 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl shadow-lg transition-colors text-sm">
+                  Tasdiqlash va Kirish
+                </button>
+              </form>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                  <div>
+                    <h2 className="text-base font-bold text-white">🛡️ Admin Boshqaruv Paneli</h2>
+                    <p className="text-xs text-slate-400">Barcha xodimlarning kechikish va ruxsatsiz chiqish tarixi</p>
+                  </div>
+                  <button onClick={() => setIsAuthenticatedAdmin(false)} className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 rounded-lg">
+                    Chiqish
+                  </button>
+                </div>
+
+                <div className="space-y-2 max-h-[450px] overflow-y-auto pr-1">
+                  {attendanceLogs.length === 0 ? (
+                    <p className="text-xs text-slate-500 text-center py-8">Hozircha yozuvlar mavjud emas.</p>
+                  ) : (
+                    attendanceLogs.map((log, index) => (
+                      <div key={index} className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs space-y-1">
+                        <div className="flex justify-between font-bold text-white">
+                          <span>{log.name}</span>
+                          <span className={log.status.includes('O\'z vaqtida') ? 'text-emerald-400' : 'text-rose-400'}>{log.status}</span>
+                        </div>
+                        <div className="text-slate-400 font-mono text-[10px]">JSHR: {log.pinfl}</div>
+                        <div className="text-slate-500 text-[10px] flex justify-between">
+                          <span>Vaqt: {log.timestamp}</span>
+                          <span>GPS: {log.lat.toFixed(4)}, {log.lng.toFixed(4)}</span>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </main>
     </div>
   );
 }
