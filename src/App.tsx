@@ -667,4 +667,75 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="space-y-2 max-h-[350px] overflow-y-auto pr-1
+                <div className="space-y-2 max-h-[350px] overflow-y-auto pr-1">
+                  {attendanceLogs.length === 0 ? (
+                    <p className="text-xs text-slate-500 text-center py-6">Yozuvlar mavjud emas.</p>
+                  ) : (
+                    attendanceLogs.map((log, index) => (
+                      <div key={index} className="bg-slate-950 p-3 rounded-2xl border border-slate-800 text-xs flex items-center space-x-3">
+                        {log.photoUrl && (
+                          <img src={log.photoUrl} alt={log.name} className="w-10 h-10 rounded-xl object-cover border border-rose-500/50 flex-shrink-0" />
+                        )}
+                        <div className="flex-1 space-y-0.5 overflow-hidden">
+                          <div className="flex justify-between font-bold text-white">
+                            <span className="truncate">{log.name}</span>
+                            <span className={log.status.includes('O\'z vaqtida') ? 'text-emerald-400' : 'text-rose-400'}>{log.status}</span>
+                          </div>
+                          <div className="text-slate-400 font-mono text-[10px]">JSHR: {log.pinfl}</div>
+                          <div className="text-slate-500 text-[10px]">{log.timestamp}</div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </main>
+
+      {/* Pastki Qismdagi Zamonaviy Navigatsiya Paneli (Rasm uslubida) */}
+      <nav className="fixed bottom-3 left-1/2 -translate-x-1/2 w-[92%] max-w-md bg-slate-900/95 backdrop-blur-xl border border-slate-800 px-3 py-2 rounded-3xl shadow-2xl z-50 flex justify-between items-center">
+        <button
+          onClick={() => setActiveTab('asosiy')}
+          className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'asosiy' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
+        >
+          <span className="text-sm">🏠</span>
+          <span className="text-[9px] font-bold">Asosiy</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('davomat')}
+          className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'davomat' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
+        >
+          <span className="text-sm">⏱️</span>
+          <span className="text-[9px] font-bold">Davomat</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('ai')}
+          className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'ai' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
+        >
+          <span className="text-sm">🤖</span>
+          <span className="text-[9px] font-bold">AI</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('fanlar')}
+          className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'fanlar' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
+        >
+          <span className="text-sm">📚</span>
+          <span className="text-[9px] font-bold">Fanlar</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('profil')}
+          className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'profil' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
+        >
+          <span className="text-sm">👤</span>
+          <span className="text-[9px] font-bold">Profil</span>
+        </button>
+      </nav>
+    </div>
+  );
+}
