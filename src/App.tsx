@@ -8,7 +8,6 @@ const COLLEGE_CONFIG = {
 
 const ADMIN_PASSWORD = "2294";
 
-// Telegram Bot Tokeni va 4 ta Chat ID ro'yxati
 const TELEGRAM_BOT_TOKEN = "9241880191:AAEGdwBHjqdBmqLv4hOrL8bIvJl2bRAV8QE";
 const TELEGRAM_CHAT_IDS = [
   "1179846016",
@@ -33,6 +32,11 @@ interface AttendanceLog {
   dateKey: string;
 }
 
+interface PendingTelegramMessage {
+  id: string;
+  text: string;
+}
+
 function getDistanceInMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
   const R = 6371e3;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -47,22 +51,75 @@ function getDistanceInMeters(lat1: number, lon1: number, lat2: number, lon2: num
   return Math.round(R * c);
 }
 
-async function sendTelegramAlertToAll(text: string) {
-  for (const chatId of TELEGRAM_CHAT_IDS) {
-    try {
-      await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text: text,
-          parse_mode: 'HTML',
-        }),
-      });
-    } catch (err) {
-      console.error(`Telegram xatolik (${chatId}):`, err);
+// Telegram xabarlarini o'tkazish (Internet bor bo'lsa darhol, yo'q bo'lsa navbatga saqlash)
+async function dispatchTelegramAlert(text: string) {
+  const isOnline = navigator.onLine;
+
+  if (isOnline) {
+    let success = false;
+    for (const chatId of TELEGRAM_CHAT_IDS) {
+      try {
+        const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: text,
+            parse_mode: 'HTML',
+          }),
+        });
+        if (res.ok) success = true;
+      } catch (err) {
+        console.error(`Telegram xatolik (${chatId}):`, err);
+      }
+    }
+    if (!success) {
+      savePendingMessage(text);
+    }
+  } else {
+    savePendingMessage(text);
+  }
+}
+
+// Oflayn xabarlarni saqlash
+function savePendingMessage(text: string) {
+  const pending: PendingTelegramMessage[] = JSON.parse(localStorage.getItem('pending_telegram_msgs') || '[]');
+  pending.push({ id: Date.now().toString(), text });
+  localStorage.setItem('pending_telegram_msgs', JSON.stringify(pending));
+}
+
+// Internet yonganda to'planib qolgan xabarlarni Telegramga yuborish
+async function flushPendingMessages() {
+  if (!navigator.onLine) return;
+  const pending: PendingTelegramMessage[] = JSON.parse(localStorage.getItem('pending_telegram_msgs') || '[]');
+  if (pending.length === 0) return;
+
+  const remaining: PendingTelegramMessage[] = [];
+
+  for (const item of pending) {
+    let sent = false;
+    for (const chatId of TELEGRAM_CHAT_IDS) {
+      try {
+        const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: `${item.text}\n\n<i>📡 (Oflayn rejimda qayd etilgan, internet yongach yuborildi)</i>`,
+            parse_mode: 'HTML',
+          }),
+        });
+        if (res.ok) sent = true;
+      } catch (err) {
+        console.error("Qayta yuborishda xato:", err);
+      }
+    }
+    if (!sent) {
+      remaining.push(item);
     }
   }
+
+  localStorage.setItem('pending_telegram_msgs', JSON.stringify(remaining));
 }
 
 export default function App() {
@@ -81,6 +138,7 @@ export default function App() {
   const [insideZone, setInsideZone] = useState<boolean>(false);
   const [attendanceStatus, setAttendanceStatus] = useState<string>('Kutilmoqda...');
   const [lastCheckTime, setLastCheckTime] = useState<string>('');
+  const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
 
   useEffect(() => {
     const savedProfile = localStorage.getItem('user_profile');
@@ -88,6 +146,22 @@ export default function App() {
       setProfile(JSON.parse(savedProfile));
     }
     loadLogs();
+
+    const handleOnline = () => {
+      setIsOnline(true);
+      flushPendingMessages();
+    };
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    flushPendingMessages();
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
   }, []);
 
   const loadLogs = () => {
@@ -143,7 +217,7 @@ export default function App() {
             setAttendanceStatus(statusText);
             setLastCheckTime(timeString);
             saveAttendanceRecord(profile, statusText, latitude, longitude, dateKey);
-            sendTelegramAlertToAll(telegramMsg);
+            dispatchTelegramAlert(telegramMsg);
           }
         } else if (!isInside && insideZone) {
           setInsideZone(false);
@@ -164,7 +238,7 @@ export default function App() {
           setAttendanceStatus(statusText);
           setLastCheckTime(timeString);
           saveAttendanceRecord(profile, statusText, latitude, longitude, dateKey);
-          sendTelegramAlertToAll(telegramMsg);
+          dispatchTelegramAlert(telegramMsg);
         }
       },
       (error) => console.error('GPS Xato:', error),
@@ -238,111 +312,118 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
-      {/* Yuqori Navigatsiya Paneli */}
-      <header className="bg-slate-900 border-b border-slate-800 px-4 py-3 flex flex-wrap justify-between items-center gap-2">
-        <div className="flex items-center space-x-2">
-          <span className="bg-teal-500/20 text-teal-400 p-2 rounded-xl text-xs font-bold">📱</span>
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 text-slate-100 flex flex-col font-sans">
+      <header className="bg-slate-900/90 backdrop-blur-md border-b border-slate-800/80 px-4 py-3 flex flex-wrap justify-between items-center gap-2 sticky top-0 z-50 shadow-lg">
+        <div className="flex items-center space-x-3">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-teal-500 to-emerald-400 flex items-center justify-center shadow-md text-slate-950 font-black text-sm">
+            🏢
+          </div>
           <div>
-            <h1 className="text-sm font-bold text-white">O'qituvchi Davomati</h1>
-            <p className="text-[10px] text-slate-400">Geofence, Telegram & Admin Panel</p>
+            <div className="flex items-center space-x-2">
+              <h1 className="text-sm font-extrabold text-white tracking-wide">Texnikum Davomati</h1>
+              <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold ${isOnline ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'}`}>
+                {isOnline ? 'ONLINE' : 'OFLAYN NAZORAT'}
+              </span>
+            </div>
+            <p className="text-[10px] text-teal-400 font-medium">GPS Geofence & Telegram Tizimi</p>
           </div>
         </div>
 
         <nav className="flex items-center space-x-1 overflow-x-auto py-1">
           <button
             onClick={() => setActiveTab('app')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${activeTab === 'app' ? 'bg-teal-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${activeTab === 'app' ? 'bg-teal-600 text-white shadow-md shadow-teal-600/30' : 'bg-slate-800/80 text-slate-300 hover:bg-slate-700'}`}
           >
             Ilova
           </button>
           <button
             onClick={() => setActiveTab('geofence')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${activeTab === 'geofence' ? 'bg-teal-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${activeTab === 'geofence' ? 'bg-teal-600 text-white shadow-md shadow-teal-600/30' : 'bg-slate-800/80 text-slate-300 hover:bg-slate-700'}`}
           >
             Geozona
           </button>
           <button
             onClick={() => setActiveTab('sqlite')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${activeTab === 'sqlite' ? 'bg-teal-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${activeTab === 'sqlite' ? 'bg-teal-600 text-white shadow-md shadow-teal-600/30' : 'bg-slate-800/80 text-slate-300 hover:bg-slate-700'}`}
           >
             Jurnal ({attendanceLogs.length})
           </button>
           <button
             onClick={() => setActiveTab('api')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${activeTab === 'api' ? 'bg-teal-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${activeTab === 'api' ? 'bg-teal-600 text-white shadow-md shadow-teal-600/30' : 'bg-slate-800/80 text-slate-300 hover:bg-slate-700'}`}
           >
             Render API
           </button>
           <button
             onClick={() => setActiveTab('admin')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center space-x-1 ${activeTab === 'admin' ? 'bg-rose-600 text-white' : 'bg-slate-800 text-rose-300 hover:bg-slate-700'}`}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all flex items-center space-x-1 ${activeTab === 'admin' ? 'bg-rose-600 text-white shadow-md shadow-rose-600/30' : 'bg-slate-800/80 text-rose-300 hover:bg-slate-700'}`}
           >
-            <span>🛡️ Admin Panel</span>
+            <span>🛡️ Admin</span>
           </button>
         </nav>
       </header>
 
-      {/* Asosiy Kontent Maydoni */}
       <main className="flex-1 p-4 max-w-4xl mx-auto w-full">
         {activeTab === 'app' && (
           <div className="space-y-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
+            <div className="bg-slate-900/80 backdrop-blur-xl border border-slate-800/80 rounded-3xl p-6 shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-40 h-40 bg-teal-500/10 rounded-full blur-3xl pointer-events-none"></div>
+
               <h2 className="text-base font-bold text-teal-400 mb-1">O'qituvchi Davomati Simulyatori</h2>
-              <p className="text-xs text-slate-400 mb-4">14 xonali JSHR kiriting, rasmingizni yuklang va geozona orqali avtomatik 'Keldi'/'Ketdi' qiling.</p>
+              <p className="text-xs text-slate-400 mb-5">14 xonali JSHR kiriting, rasmingizni yuklang va geozona orqali avtomatik nazoratdan o'ting.</p>
 
               {!profile ? (
                 <form onSubmit={handleSaveProfile} className="space-y-4">
-                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
+                  <div className="bg-slate-950/70 p-4 rounded-2xl border border-slate-800/80 space-y-3">
                     <div>
-                      <label className="text-xs text-slate-300 block mb-1">JSHR / PINFL (14 raqam):</label>
+                      <label className="text-xs text-slate-300 block mb-1 font-medium">JSHR / PINFL (14 raqam):</label>
                       <input
                         type="text"
                         maxLength={14}
                         value={pinflInput}
                         onChange={(e) => setPinflInput(e.target.value.replace(/\D/g, ''))}
                         placeholder="3200195..."
-                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-teal-500"
+                        className="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-teal-500 shadow-inner"
                         required
                       />
                     </div>
                     <div>
-                      <label className="text-xs text-slate-300 block mb-1">Ism va Familiyangiz:</label>
+                      <label className="text-xs text-slate-300 block mb-1 font-medium">Ism va Familiyangiz:</label>
                       <input
                         type="text"
                         value={nameInput}
                         onChange={(e) => setNameInput(e.target.value)}
                         placeholder="Aliyev Vali"
-                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-teal-500"
+                        className="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-teal-500 shadow-inner"
                         required
                       />
                     </div>
                     <div>
-                      <label className="text-xs text-slate-300 block mb-1">Rasmingiz:</label>
+                      <label className="text-xs text-slate-300 block mb-1 font-medium">Rasmingiz:</label>
                       <input
                         type="file"
                         accept="image/*"
                         capture="user"
                         onChange={handlePhotoUpload}
-                        className="w-full text-xs text-slate-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-teal-600 file:text-white"
+                        className="w-full text-xs text-slate-400 file:mr-3 file:py-2 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-teal-600 file:text-white file:shadow-md cursor-pointer"
                         required
                       />
                     </div>
                     {photoInput && (
-                      <div className="flex justify-center mt-2">
-                        <img src={photoInput} alt="Preview" className="w-16 h-16 object-cover rounded-full border-2 border-teal-500 shadow" />
+                      <div className="flex justify-center mt-3">
+                        <img src={photoInput} alt="Preview" className="w-16 h-16 object-cover rounded-full border-2 border-teal-400 shadow-lg" />
                       </div>
                     )}
                   </div>
-                  <button type="submit" className="w-full py-3 bg-teal-600 hover:bg-teal-500 text-white font-bold rounded-xl shadow-lg transition-colors text-sm">
+                  <button type="submit" className="w-full py-3.5 bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-500 hover:to-emerald-500 text-white font-bold rounded-xl shadow-lg shadow-teal-600/30 transition-all text-sm">
                     Saqlash va Boshlash
                   </button>
                 </form>
               ) : (
-                <div className="space-y-4 text-center">
-                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 flex items-center space-x-4 text-left">
-                    <img src={profile.photoUrl} alt={profile.fullName} className="w-14 h-14 rounded-full object-cover border-2 border-teal-400 shadow-md" />
-                    <div className="flex-1 overflow-hidden">
+                <div className="space-y-5 text-center">
+                  <div className="bg-slate-950/80 p-4 rounded-2xl border border-slate-800/80 flex items-center justify-between shadow-inner">
+                    <div className="text-left overflow-hidden pr-2">
+                      <span className="text-[10px] uppercase tracking-wider text-teal-400 font-semibold block mb-0.5">Xodim Profili</span>
                       <h3 className="font-bold text-white text-sm truncate">{profile.fullName}</h3>
                       <p className="text-[11px] text-slate-400 font-mono">JSHR: {profile.pinfl}</p>
                       <button
@@ -352,24 +433,28 @@ export default function App() {
                             setProfile(null);
                           }
                         }}
-                        className="text-[10px] text-rose-400 hover:underline mt-0.5 block"
+                        className="text-[10px] text-rose-400 hover:underline mt-1 block font-medium"
                       >
                         Profilni o'zgartirish
                       </button>
                     </div>
+                    <div className="relative flex-shrink-0">
+                      <img src={profile.photoUrl} alt={profile.fullName} className="w-16 h-16 rounded-2xl object-cover border-2 border-teal-400 shadow-xl" />
+                      <span className={`absolute -bottom-1 -right-1 w-4 h-4 border-2 border-slate-950 rounded-full ${isOnline ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
+                    </div>
                   </div>
 
-                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-1">
-                    <div className="text-xs text-slate-400">Kollejgacha masofa:</div>
-                    <div className="text-3xl font-extrabold text-teal-400 font-mono">
+                  <div className="bg-slate-950/80 p-5 rounded-2xl border border-slate-800/80 space-y-1 shadow-inner">
+                    <div className="text-xs text-slate-400 font-medium">Texnikum markazigacha masofa:</div>
+                    <div className="text-3xl font-extrabold text-teal-400 font-mono tracking-tight">
                       {currentDistance !== null ? `${currentDistance} m` : 'GPS aniqlanmoqda...'}
                     </div>
                     <div className="text-[10px] text-slate-500">(Geozona chegarasi: {COLLEGE_CONFIG.radiusMeters}m)</div>
                   </div>
 
-                  <div className={`p-4 rounded-xl border ${insideZone ? 'bg-emerald-950/40 border-emerald-500/50 text-emerald-300' : 'bg-rose-950/40 border-rose-500/50 text-rose-300'}`}>
+                  <div className={`p-4 rounded-2xl border shadow-md transition-all ${insideZone ? 'bg-emerald-950/40 border-emerald-500/50 text-emerald-300' : 'bg-rose-950/40 border-rose-500/50 text-rose-300'}`}>
                     <div className="text-sm font-bold">{attendanceStatus}</div>
-                    {lastCheckTime && <div className="text-xs opacity-80 mt-1">Vaqt: {lastCheckTime}</div>}
+                    {lastCheckTime && <div className="text-xs opacity-80 mt-1 font-mono">Vaqt: {lastCheckTime}</div>}
                   </div>
                 </div>
               )}
@@ -378,10 +463,10 @@ export default function App() {
         )}
 
         {activeTab === 'geofence' && (
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+          <div className="bg-slate-900/80 backdrop-blur-xl border border-slate-800/80 rounded-3xl p-6 shadow-2xl space-y-4">
             <h2 className="text-base font-bold text-teal-400">Geozona Parametrlari</h2>
-            <p className="text-xs text-slate-400">Kollejning belgilangan GPS koordinatalari va geofence radiusi.</p>
-            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2 text-xs font-mono">
+            <p className="text-xs text-slate-400">Texnikumning belgilangan GPS koordinatalari va geofence radiusi.</p>
+            <div className="bg-slate-950/70 p-4 rounded-2xl border border-slate-800/80 space-y-2 text-xs font-mono text-slate-300">
               <div>Kenglik (Latitude): {COLLEGE_CONFIG.latitude}</div>
               <div>Uzunlik (Longitude): {COLLEGE_CONFIG.longitude}</div>
               <div>Ruxsat etilgan radius: {COLLEGE_CONFIG.radiusMeters} metr</div>
@@ -390,17 +475,17 @@ export default function App() {
         )}
 
         {activeTab === 'sqlite' && (
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+          <div className="bg-slate-900/80 backdrop-blur-xl border border-slate-800/80 rounded-3xl p-6 shadow-2xl space-y-4">
             <div className="flex justify-between items-center">
               <h2 className="text-base font-bold text-white">Doimiy Davomat Jurnali</h2>
-              <button onClick={handleClearLogs} className="text-xs text-rose-400 hover:underline">Tarixni tozalash</button>
+              <button onClick={handleClearLogs} className="text-xs text-rose-400 hover:underline font-medium">Tarixni tozalash</button>
             </div>
-            <div className="space-y-2 max-h-[450px] overflow-y-auto pr-1">
+            <div className="space-y-2.5 max-h-[450px] overflow-y-auto pr-1">
               {attendanceLogs.length === 0 ? (
                 <p className="text-xs text-slate-500 text-center py-8">Hozircha davomat yozuvlari mavjud emas.</p>
               ) : (
                 attendanceLogs.map((log, index) => (
-                  <div key={index} className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs space-y-1">
+                  <div key={index} className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80 text-xs space-y-1 shadow-sm">
                     <div className="flex justify-between font-bold text-white">
                       <span>{log.name}</span>
                       <span className={log.status.includes('O\'z vaqtida') ? 'text-emerald-400' : 'text-rose-400'}>{log.status}</span>
@@ -418,32 +503,32 @@ export default function App() {
         )}
 
         {activeTab === 'api' && (
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+          <div className="bg-slate-900/80 backdrop-blur-xl border border-slate-800/80 rounded-3xl p-6 shadow-2xl space-y-4">
             <h2 className="text-base font-bold text-teal-400">Render API Holati</h2>
             <p className="text-xs text-slate-400">Tizim vaqt va geofence ma'lumotlarini Render serveri orqali sinxronizatsiya qiladi.</p>
-            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 text-xs font-mono text-emerald-400">
+            <div className="bg-slate-950/70 p-4 rounded-2xl border border-slate-800/80 text-xs font-mono text-emerald-400 shadow-inner">
               🟢 API Ulanishi faol va barqaror ishlamoqda.
             </div>
           </div>
         )}
 
         {activeTab === 'admin' && (
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+          <div className="bg-slate-900/80 backdrop-blur-xl border border-slate-800/80 rounded-3xl p-6 shadow-2xl space-y-4">
             {!isAuthenticatedAdmin ? (
               <form onSubmit={handleAdminLogin} className="space-y-4 max-w-sm mx-auto py-6">
-                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3 text-center">
+                <div className="bg-slate-950/70 p-5 rounded-2xl border border-slate-800/80 space-y-3 text-center shadow-inner">
                   <h2 className="text-sm font-bold text-white">Admin Paneliga Kirish</h2>
-                  <p className="text-[11px] text-slate-400">Maxfiy parolni kiriting (2294)</p>
+                  <p className="text-[11px] text-slate-400">Maxfiy parolni kiriting</p>
                   <input
                     type="password"
                     value={passwordInput}
                     onChange={(e) => setPasswordInput(e.target.value)}
                     placeholder="Parol..."
-                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-teal-500 font-mono text-center"
+                    className="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-teal-500 font-mono text-center shadow-inner"
                     required
                   />
                 </div>
-                <button type="submit" className="w-full py-3 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl shadow-lg transition-colors text-sm">
+                <button type="submit" className="w-full py-3.5 bg-gradient-to-r from-rose-600 to-pink-600 hover:from-rose-500 hover:to-pink-500 text-white font-bold rounded-xl shadow-lg shadow-rose-600/30 transition-all text-sm">
                   Tasdiqlash va Kirish
                 </button>
               </form>
@@ -454,17 +539,17 @@ export default function App() {
                     <h2 className="text-base font-bold text-white">🛡️ Admin Boshqaruv Paneli</h2>
                     <p className="text-xs text-slate-400">Barcha xodimlarning kechikish va ruxsatsiz chiqish tarixi</p>
                   </div>
-                  <button onClick={() => setIsAuthenticatedAdmin(false)} className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 rounded-lg">
+                  <button onClick={() => setIsAuthenticatedAdmin(false)} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 rounded-xl font-medium">
                     Chiqish
                   </button>
                 </div>
 
-                <div className="space-y-2 max-h-[450px] overflow-y-auto pr-1">
+                <div className="space-y-2.5 max-h-[450px] overflow-y-auto pr-1">
                   {attendanceLogs.length === 0 ? (
                     <p className="text-xs text-slate-500 text-center py-8">Hozircha yozuvlar mavjud emas.</p>
                   ) : (
                     attendanceLogs.map((log, index) => (
-                      <div key={index} className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs space-y-1">
+                      <div key={index} className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80 text-xs space-y-1 shadow-sm">
                         <div className="flex justify-between font-bold text-white">
                           <span>{log.name}</span>
                           <span className={log.status.includes('O\'z vaqtida') ? 'text-emerald-400' : 'text-rose-400'}>{log.status}</span>
