@@ -218,6 +218,7 @@ export default function App() {
         const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         const timeOnly = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         const dateKey = now.toISOString().split('T')[0];
+        const dayOfWeek = now.getDay(); // 0: Yakshanba, 6: Shanba
 
         const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
         const todayUserLogs = existingLogs.filter(l => l.pinfl === profile.pinfl && l.dateKey === dateKey);
@@ -255,14 +256,17 @@ export default function App() {
             const hours = now.getHours();
             const minutes = now.getMinutes();
             const totalMinutes = hours * 60 + minutes;
-            const endWorkMinutes = 16 * 60; // 16:00
+            
+            // Shanba kuni 13:00, qolgan kunlar 16:00
+            const endWorkMinutes = dayOfWeek === 6 ? 13 * 60 : 16 * 60;
 
             let statusText = `${timeOnly} – Vaqtida chiqib ketdi (Ish tugadi)`;
             let telegramMsg = `<b>🔴 DAVOMAT: KETDI</b>\n\n👤 <b>Xodim:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}`;
 
             if (totalMinutes < endWorkMinutes) {
-              statusText = `${timeOnly} – Ruxsatsiz chiqib ketdi (16:00 gacha)`;
-              telegramMsg = `<b>🚨 SHOSHILINCH ALERT! RUXSATSIZ CHIQIB KETDI!</b>\n\n👤 <b>Xodim:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}\n⚠️ <b>Izoh:</b> Ish vaqti tugamasdan (16:00 gacha) hududdan chiqdi!`;
+              const limitStr = dayOfWeek === 6 ? "13:00" : "16:00";
+              statusText = `${timeOnly} – Ruxsatsiz chiqib ketdi (${limitStr} gacha)`;
+              telegramMsg = `<b>🚨 SHOSHILINCH ALERT! RUXSATSIZ CHIQIB KETDI!</b>\n\n👤 <b>Xodim:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}\n⚠️ <b>Izoh:</b> Ish vaqti tugamasdan (${limitStr} gacha) hududdan chiqdi!`;
             }
 
             setLastCheckTime(timeString);
@@ -343,7 +347,6 @@ export default function App() {
     }
   };
 
-  // CSV formatida fayl qilib yuklab olish funksiyasi
   const handleExportCSV = () => {
     if (attendanceLogs.length === 0) {
       alert("Yuklab olish uchun ma'lumotlar mavjud emas!");
