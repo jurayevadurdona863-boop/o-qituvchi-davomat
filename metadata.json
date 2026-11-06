@@ -1,0 +1,10 @@
+{
+  "name": "O'qituvchi Davomat - Flutter GPS Attendance System",
+  "description": "Flutter Android teacher attendance system with background GPS geofencing (latitude 38.971199, longitude 66.707470, 500m radius), JSHR authentication, offline SQLite cache with auto-sync, and Render backend integration.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
