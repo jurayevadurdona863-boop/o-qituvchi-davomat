@@ -96,9 +96,13 @@ async function sendTelegramPhotoAlert(text: string, photoBase64?: string) {
 }
 
 function savePendingMessage(text: string, photoUrl?: string) {
-  const pending: PendingTelegramMessage[] = JSON.parse(localStorage.getItem('pending_telegram_msgs') || '[]');
-  pending.push({ id: Date.now().toString(), text, photoUrl });
-  localStorage.setItem('pending_telegram_msgs', JSON.stringify(pending));
+  try {
+    const pending: PendingTelegramMessage[] = JSON.parse(localStorage.getItem('pending_telegram_msgs') || '[]');
+    pending.push({ id: Date.now().toString(), text, photoUrl });
+    localStorage.setItem('pending_telegram_msgs', JSON.stringify(pending));
+  } catch (e) {
+    console.error("Xabarni saqlashda xatolik:", e);
+  }
 }
 
 async function flushPendingMessages() {
@@ -112,7 +116,7 @@ async function flushPendingMessages() {
     let sent = false;
     for (const chatId of TELEGRAM_CHAT_IDS) {
       try {
-        const fullText = `${item.text}\n\n<i>📡 (Oflayn rejimda qayd etilgan)</i>`;
+        const fullText = `${item.text}\n\n<i>📡 (Internet tiklangach yuborildi)</i>`;
         if (item.photoUrl && item.photoUrl.startsWith('data:image')) {
           const res = await fetch(item.photoUrl);
           const blob = await res.blob();
@@ -187,7 +191,25 @@ export default function App() {
   useEffect(() => {
     const savedProfile = localStorage.getItem('user_profile');
     if (savedProfile) {
-      setProfile(JSON.parse(savedProfile));
+      try {
+        const parsed = JSON.parse(savedProfile);
+        setProfile(parsed);
+        // Agar oldindan bugungi yozuvi bo'lsa, ekran vaqtini tiklab qo'yish
+        const now = new Date();
+        const dateKey = now.toISOString().split('T')[0];
+        const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
+        const todayUserLog = existingLogs.find(l => l.pinfl === parsed.pinfl && l.dateKey === dateKey);
+        if (todayUserLog) {
+          if (todayUserLog.status.includes('Keldi') || todayUserLog.status.includes('Kechikdi')) {
+            setCheckInTimeDisplay(todayUserLog.timeOnly);
+          }
+          if (todayUserLog.status.includes('Ketdi')) {
+            setCheckOutTimeDisplay(todayUserLog.timeOnly);
+          }
+        }
+      } catch (e) {
+        console.error("Profilni o'qishda xatolik:", e);
+      }
     }
     loadLogs();
 
@@ -209,8 +231,12 @@ export default function App() {
   }, []);
 
   const loadLogs = () => {
-    const logs = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
-    setAttendanceLogs(logs.reverse());
+    try {
+      const logs = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
+      setAttendanceLogs([...logs].reverse());
+    } catch (e) {
+      console.error("Jurnalni yuklashda xatolik:", e);
+    }
   };
 
   useEffect(() => {
@@ -237,7 +263,7 @@ export default function App() {
         const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         const timeOnly = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         const dateKey = now.toISOString().split('T')[0];
-        const dayOfWeek = now.getDay(); // 0: Yakshanba, 6: Shanba
+        const dayOfWeek = now.getDay();
 
         const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
         const todayUserLogs = existingLogs.filter(l => l.pinfl === profile.pinfl && l.dateKey === dateKey);
@@ -372,16 +398,20 @@ export default function App() {
       alert("Yuklab olish uchun ma'lumotlar mavjud emas!");
       return;
     }
-    const headers = "JSHR,F.I.Sh,Holat,Sana va Vaqt,GPS\n";
-    const rows = attendanceLogs.map(l => `"${l.pinfl}","${l.name}","${l.status}","${l.timestamp}","${l.lat.toFixed(4)}, ${l.lng.toFixed(4)}"`).join("\n");
-    const blob = new Blob(["\uFEFF" + headers + rows], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `Texnikum_Davomati_${new Date().toISOString().split('T')[0]}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    try {
+      const headers = "JSHR,F.I.Sh,Holat,Sana va Vaqt,GPS\n";
+      const rows = attendanceLogs.map(l => `"${l.pinfl}","${l.name}","${l.status}","${l.timestamp}","${l.lat.toFixed(4)}, ${l.lng.toFixed(4)}"`).join("\n");
+      const blob = new Blob(["\uFEFF" + headers + rows], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', `Texnikum_Davomati_${new Date().toISOString().split('T')[0]}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      alert("Faylni yuklab olishda xatolik yuz berdi.");
+    }
   };
 
   return (
