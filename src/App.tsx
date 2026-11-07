@@ -169,6 +169,7 @@ export default function App() {
   
   const [currentTimeStr, setCurrentTimeStr] = useState<string>('');
   const [currentDateStr, setCurrentDateStr] = useState<string>('');
+  const [isSaturday, setIsSaturday] = useState<boolean>(false);
 
   useEffect(() => {
     const updateClock = () => {
@@ -176,6 +177,7 @@ export default function App() {
       setCurrentTimeStr(now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
       const options: Intl.DateTimeFormatOptions = { weekday: 'long', day: 'numeric', month: 'long' };
       setCurrentDateStr(now.toLocaleDateString('uz-UZ', options));
+      setIsSaturday(now.getDay() === 6);
     };
     updateClock();
     const timer = setInterval(updateClock, 1000);
@@ -384,7 +386,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans pb-28 selection:bg-teal-500 selection:text-slate-950">
-      {/* Yuqori Profil va Vaqt Qismi (Rasm shablonidagi kabi) */}
       <header className="bg-gradient-to-b from-slate-900 to-slate-950 px-4 pt-4 pb-6 border-b border-slate-800/60 shadow-xl">
         <div className="max-w-md mx-auto space-y-4">
           <div className="flex justify-between items-center">
@@ -407,7 +408,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Profil Bloki: Rasm o'ng burchakda */}
           {profile ? (
             <div className="flex items-center justify-between bg-slate-900/90 border border-slate-800 p-3 rounded-2xl shadow-inner">
               <div className="overflow-hidden pr-2">
@@ -425,7 +425,6 @@ export default function App() {
                   Profilni o'zgartirish
                 </button>
               </div>
-              {/* Rasm o'ng burchakda */}
               <div className="relative flex-shrink-0">
                 <img src={profile.photoUrl} alt={profile.fullName} className="w-14 h-14 rounded-2xl object-cover border-2 border-teal-400 shadow-lg" />
                 <span className="absolute -bottom-1 -right-1 w-3.5 h-3.5 bg-emerald-500 border-2 border-slate-900 rounded-full"></span>
@@ -467,19 +466,21 @@ export default function App() {
             </div>
           )}
 
-          {/* Katta Soat va Hozirgi Dars Bloki */}
           <div className="flex justify-between items-end pt-2">
             <div>
-              <div className="text-4xl font-black text-white tracking-tight font-mono">{currentTimeStr || '09:47'}</div>
-              <div className="text-xs text-slate-400 capitalize font-medium">{currentDateStr || 'Shanba, 24 oktyabr'}</div>
+              <div className="text-4xl font-black text-white tracking-tight font-mono">{currentTimeStr || '07:35'}</div>
+              <div className="text-xs text-slate-400 capitalize font-medium">{currentDateStr || 'Shanba, 7-noyabr'}</div>
             </div>
             <div className="bg-slate-900 border border-slate-800 px-3.5 py-2 rounded-2xl text-right shadow-inner">
-              <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider">Ish Vaqti</span>
-              <span className="text-sm font-extrabold text-teal-400 font-mono">08:30 / 16:00</span>
+              <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider">
+                {isSaturday ? 'Shanba (Qisqartirilgan)' : 'Ish Vaqti'}
+              </span>
+              <span className="text-sm font-extrabold text-teal-400 font-mono">
+                {isSaturday ? '08:30 / 13:00' : '08:30 / 16:00'}
+              </span>
             </div>
           </div>
 
-          {/* Geozona Holati va Masofa */}
           <div className="bg-slate-900/90 border border-slate-800 p-3.5 rounded-2xl shadow-inner space-y-1">
             <div className="flex justify-between items-center text-xs">
               <span className={`font-bold flex items-center space-x-1.5 ${insideZone ? 'text-emerald-400' : 'text-rose-400'}`}>
@@ -495,7 +496,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Kirish va Chiqish Kartalari */}
           <div className="grid grid-cols-2 gap-3 pt-1">
             <div className="bg-slate-900/90 border border-slate-800 p-3 rounded-2xl shadow-inner flex items-center space-x-3">
               <div className="w-9 h-9 rounded-xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-400 font-bold text-sm">
@@ -519,11 +519,9 @@ export default function App() {
         </div>
       </header>
 
-      {/* Asosiy Kontent Qismi */}
       <main className="flex-1 p-4 max-w-md mx-auto w-full space-y-4">
         {activeTab === 'asosiy' && (
           <div className="space-y-4">
-            {/* Statistika Kartalari */}
             <div className="grid grid-cols-3 gap-2.5">
               <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl text-center shadow-md space-y-1">
                 <span className="w-5 h-5 mx-auto bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center text-[10px] font-bold">✓</span>
@@ -542,7 +540,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Qoldirish chegarasi */}
             <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl shadow-md space-y-2">
               <div className="flex justify-between items-center text-xs">
                 <span className="font-bold text-white">Ish qoldirish chegarasi</span>
@@ -694,7 +691,6 @@ export default function App() {
         )}
       </main>
 
-      {/* Pastki Qismdagi Zamonaviy Navigatsiya Paneli (Rasm uslubida) */}
       <nav className="fixed bottom-3 left-1/2 -translate-x-1/2 w-[92%] max-w-md bg-slate-900/95 backdrop-blur-xl border border-slate-800 px-3 py-2 rounded-3xl shadow-2xl z-50 flex justify-between items-center">
         <button
           onClick={() => setActiveTab('asosiy')}
