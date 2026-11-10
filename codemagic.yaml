@@ -10,8 +10,9 @@ workflows:
       - name: Build web project
         script: |
           npm run build
-      - name: Add Android platform and Sync
+      - name: Initialize Capacitor Android with AppId
         script: |
+          npx --yes @capacitor/cli init "O Qituvchi Davomat" "com.oqituvchi.davomat" --web-dir dist || true
           npx --yes @capacitor/cli add android || true
           npx --yes @capacitor/cli sync android
       - name: Build Android APK
