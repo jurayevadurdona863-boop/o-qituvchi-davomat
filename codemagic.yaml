@@ -21,6 +21,7 @@ workflows:
         script: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew wrapper --gradle-version 8.0
+          ./gradlew assembleDebug -Dorg.gradle.warning.mode=all
     artifacts:
       - android/app/build/outputs/apk/debug/*.apk
