@@ -19,6 +19,7 @@ workflows:
         script: |
           cd android
           chmod +x gradlew
+          ./gradlew wrapper --gradle-version 8.0.2
           ./gradlew assembleDebug
     artifacts:
       - android/app/build/outputs/apk/debug/*.apk
