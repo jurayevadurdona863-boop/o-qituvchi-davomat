@@ -12,7 +12,7 @@ workflows:
           npm run build
       - name: Sync Capacitor
         script: |
-          npx cap sync android
+          npx --yes @capacitor/cli sync android
       - name: Build Android APK
         script: |
           cd android
