@@ -3,6 +3,8 @@ workflows:
     name: Android Capacitor Build Workflow
     max_build_duration: 60
     instance_type: mac_mini_m1
+    environment:
+      java: 11
     scripts:
       - name: Install dependencies
         script: |
@@ -19,6 +21,6 @@ workflows:
         script: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --info
+          ./gradlew assembleDebug
     artifacts:
       - android/app/build/outputs/apk/debug/*.apk
