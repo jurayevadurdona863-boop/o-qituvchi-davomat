@@ -17,6 +17,13 @@ workflows:
         script: |
           npx cap add android || true
           npx cap sync android
+          # Android Manifest fayliga GPS ruxsatlarini avtomatik qo'shish:
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST" ]; then
+            sed -i '' '/<uses-permission android:name="android.permission.INTERNET" \/>/a \
+            <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" \/>\
+            <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" \/>' "$MANIFEST"
+          fi
       - name: Build Android APK
         script: |
           cd android
