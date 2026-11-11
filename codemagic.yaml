@@ -14,11 +14,11 @@ workflows:
           npm run build
       - name: Prepare Android Platform
         script: |
-          npx cap sync android
+          ./node_modules/.bin/cap sync android
       - name: Build Android APK
         script: |
           cd android
           chmod +x gradlew
-          ./gradlew clean assembleDebug
+          ./gradlew assembleDebug
     artifacts:
       - android/app/build/outputs/apk/debug/*.apk
