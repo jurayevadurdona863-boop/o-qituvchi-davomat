@@ -9,19 +9,16 @@ workflows:
       - name: Install dependencies
         script: |
           npm install --legacy-peer-deps
-          npm install @capacitor/core @capacitor/android @capacitor/cli --legacy-peer-deps
       - name: Build web project
         script: |
           npm run build
-      - name: Recreate Android platform cleanly
+      - name: Prepare Android Platform
         script: |
-          rm -rf android
-          npx cap add android
           npx cap sync android
       - name: Build Android APK
         script: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --info --stacktrace
+          ./gradlew clean assembleDebug
     artifacts:
       - android/app/build/outputs/apk/debug/*.apk
