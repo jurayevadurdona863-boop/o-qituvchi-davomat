@@ -13,14 +13,15 @@ workflows:
       - name: Build web project
         script: |
           npm run build
-      - name: Add Android platform and sync
+      - name: Recreate Android platform cleanly
         script: |
-          ./node_modules/.bin/cap add android || true
-          ./node_modules/.bin/cap sync android
+          rm -rf android
+          npx cap add android
+          npx cap sync android
       - name: Build Android APK
         script: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --stacktrace
     artifacts:
       - android/app/build/outputs/apk/debug/*.apk
