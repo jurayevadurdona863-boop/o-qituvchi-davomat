@@ -22,6 +22,6 @@ workflows:
         script: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --stacktrace
+          ./gradlew assembleDebug --info --stacktrace
     artifacts:
       - android/app/build/outputs/apk/debug/*.apk
