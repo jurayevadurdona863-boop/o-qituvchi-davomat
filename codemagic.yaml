@@ -9,12 +9,14 @@ workflows:
       - name: Install dependencies
         script: |
           npm install --legacy-peer-deps
+          npm install -D @capacitor/cli @capacitor/core @capacitor/android --legacy-peer-deps
       - name: Build web project
         script: |
           npm run build
       - name: Prepare Android Platform
         script: |
-          ./node_modules/.bin/cap sync android
+          npx cap add android || true
+          npx cap sync android
       - name: Build Android APK
         script: |
           cd android
