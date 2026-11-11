@@ -5,6 +5,7 @@ workflows:
     instance_type: mac_mini_m1
     environment:
       java: 17
+      android_sdk: latest
     scripts:
       - name: Install dependencies
         script: |
@@ -21,6 +22,6 @@ workflows:
         script: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --stacktrace
     artifacts:
       - android/app/build/outputs/apk/debug/*.apk
