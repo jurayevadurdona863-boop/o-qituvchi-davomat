@@ -337,14 +337,14 @@ export default function App() {
       if (!users.some(u => u.pinfl === pinflInput)) {
         users.push(newProfile);
         localStorage.setItem('registered_users_list', JSON.stringify(users));
-
-        // Yangi xodim ulanganda Telegram botga xabar yuborish
-        const regMsg = `<b>👤 YANGI XODIM TIZIMGA ULANDI</b>\n\n📌 <b>F.I.Sh:</b> ${nameInput}\n🆔 <b>JSHR:</b> <code>${pinflInput}</code>\n⏰ <b>Vaqt:</b> ${new Date().toLocaleTimeString()}`;
-        sendTelegramPhotoAlert(regMsg, photoInput);
       }
     } catch (err) {
       console.error(err);
     }
+
+    // Telegram botga darhol xabar yuborish
+    const regMsg = `<b>👤 YANGI XODIM TIZIMGA ULANDI</b>\n\n📌 <b>F.I.Sh:</b> ${nameInput}\n🆔 <b>JSHR:</b> <code>${pinflInput}</code>\n⏰ <b>Vaqt:</b> ${new Date().toLocaleTimeString()}`;
+    sendTelegramPhotoAlert(regMsg, photoInput);
 
     loadData();
     alert("Profil muvaffaqiyatli saqlandi va botga xabar yuborildi!");
@@ -716,7 +716,7 @@ export default function App() {
         </button>
 
         <button
-          onClick={() => setActiveTab('profil') }
+          onClick={() => setActiveTab('profil')}
           className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'profil' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
         >
           <span className="text-sm">👤</span>
