@@ -194,6 +194,22 @@ async function startServer() {
     });
   });
 
+  // Excel / CSV export endpoint (Qo'shildi)
+  app.get('/api/export', (req: Request, res: Response) => {
+    if (attendanceLogs.length === 0) {
+      return res.status(404).json({ success: false, error: 'Yuklab olish uchun ma\'lumotlar mavjud emas!' });
+    }
+
+    let csv = '\uFEFFID,JSHR,Harakat,Sana/Vaqt,Masofa (m),Hududda,IP\n';
+    attendanceLogs.forEach(item => {
+      csv += `"${item.id}","${item.jshr}","${item.action_type}","${item.timestamp}","${item.distance_meters}","${item.within_geofence ? 'Ha' : 'Yo\'q'}","${item.ip || ''}"\n`;
+    });
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=davomat_hisobot.csv');
+    return res.status(200).send(csv);
+  });
+
   // Clear server history (for testing)
   app.post('/api/attendance-clear', (_req: Request, res: Response) => {
     attendanceLogs.length = 0;
