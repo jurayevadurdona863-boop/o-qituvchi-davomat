@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 const COLLEGE_CONFIG = {
   latitude: 38.971199,
   longitude: 66.707470,
-  radiusMeters: 999999,
+  checkInRadiusMeters: 100, // Davomatdan o'tish uchun ruxsat etilgan masofa (100m)
+  alertBoundaryMeters: 400, // Ish vaqtida chiqib ketsa xabar berish chegarasi (400m)
 };
 
 const ADMIN_PASSWORD = "2294";
@@ -166,13 +167,19 @@ export default function App() {
   const [photoInput, setPhotoInput] = useState<string | null>(null);
 
   const [currentDistance, setCurrentDistance] = useState<number | null>(null);
-  const [attendanceStatus, setAttendanceStatus] = useState<string>('Tayyor...');
+  const [currentCoords, setCurrentCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [checkInTimeDisplay, setCheckInTimeDisplay] = useState<string>('--:--');
   const [checkOutTimeDisplay, setCheckOutTimeDisplay] = useState<string>('--:--');
+  const [arrivalBadge, setArrivalBadge] = useState<{ text: string; isLate: boolean } | null>(null);
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
   
   const [currentTimeStr, setCurrentTimeStr] = useState<string>('');
   const [currentDateStr, setCurrentDateStr] = useState<string>('');
+  const [isSaturday, setIsSaturday] = useState<boolean>(false);
+
+  // Jonli kamera uchun holat va ref
+  const [pendingAction, setPendingAction] = useState<'keldi' | 'ketdi' | null>(null);
+  const liveCameraInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const updateClock = () => {
@@ -180,6 +187,7 @@ export default function App() {
       setCurrentTimeStr(now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
       const options: Intl.DateTimeFormatOptions = { weekday: 'long', day: 'numeric', month: 'long' };
       setCurrentDateStr(now.toLocaleDateString('uz-UZ', options));
+      setIsSaturday(now.getDay() === 6);
     };
     updateClock();
     const timer = setInterval(updateClock, 1000);
@@ -192,16 +200,7 @@ export default function App() {
       try {
         const parsed = JSON.parse(savedProfile);
         setProfile(parsed);
-        const now = new Date();
-        const dateKey = now.toISOString().split('T')[0];
-        const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
-        const todayUserLogs = existingLogs.filter(l => l.pinfl === parsed.pinfl && l.dateKey === dateKey);
-        
-        const checkIn = todayUserLogs.find(l => l.status.includes('Keldi') || l.status.includes('Belgilandi'));
-        const checkOut = todayUserLogs.find(l => l.status.includes('Ketdi'));
-
-        if (checkIn) setCheckInTimeDisplay(checkIn.timeOnly);
-        if (checkOut) setCheckOutTimeDisplay(checkOut.timeOnly);
+        restoreTodayStatus(parsed.pinfl);
       } catch (e) {
         console.error("Profilni o'qishda xatolik:", e);
       }
@@ -225,6 +224,28 @@ export default function App() {
     };
   }, []);
 
+  const restoreTodayStatus = (pinfl: string) => {
+    const now = new Date();
+    const dateKey = now.toISOString().split('T')[0];
+    const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
+    const todayUserLogs = existingLogs.filter(l => l.pinfl === pinfl && l.dateKey === dateKey);
+
+    const checkIn = todayUserLogs.find(l => l.status.includes('Keldi') || l.status.includes('Kechikdi'));
+    const checkOut = todayUserLogs.find(l => l.status.includes('Ketdi'));
+
+    if (checkIn) {
+      setCheckInTimeDisplay(checkIn.timeOnly);
+      const isLate = checkIn.status.includes('Kechikdi');
+      setArrivalBadge({
+        text: isLate ? "⚠️ Kechikdingiz (08:30 dan keyin)" : "✅ O'z vaqtida keldingiz",
+        isLate,
+      });
+    }
+    if (checkOut) {
+      setCheckOutTimeDisplay(checkOut.timeOnly);
+    }
+  };
+
   const loadData = () => {
     try {
       const logs = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
@@ -237,6 +258,7 @@ export default function App() {
     }
   };
 
+  // GPS kuzatuvi va 400m chegaradan chiqishni nazorat qilish
   useEffect(() => {
     if (!profile) return;
 
@@ -248,6 +270,8 @@ export default function App() {
     const watchId = navigator.geolocation.watchPosition(
       (position) => {
         const { latitude, longitude } = position.coords;
+        setCurrentCoords({ lat: latitude, lng: longitude });
+
         const dist = getDistanceInMeters(
           latitude,
           longitude,
@@ -256,35 +280,184 @@ export default function App() {
         );
         setCurrentDistance(dist);
 
+        // 400 metrdan chiqib ketish nazorati (faqat ishga kelgan va hali ketmagan bo'lsa)
         const now = new Date();
-        const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        const timeOnly = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         const dateKey = now.toISOString().split('T')[0];
-
         const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
         const todayUserLogs = existingLogs.filter(l => l.pinfl === profile.pinfl && l.dateKey === dateKey);
-        
-        const hasCheckedInToday = todayUserLogs.some(l => l.status.includes('Keldi') || l.status.includes('Belgilandi'));
 
-        setAttendanceStatus(`Siz texnikum hududidan tashqaridasiz (${dist} m)`);
+        const hasCheckedIn = todayUserLogs.some(l => l.status.includes('Keldi') || l.status.includes('Kechikdi'));
+        const hasCheckedOut = todayUserLogs.some(l => l.status.includes('Ketdi'));
 
-        if (!hasCheckedInToday) {
-          const statusText = `${timeOnly} – Keldi (${dist}m uzoqlikda)`;
-          const telegramMsg = `<b>🟢 XODIM KELDI</b>\n\n👤 <b>F.I.Sh:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}\n📍 <b>Masofa:</b> ${dist} metr`;
+        const alertFlagKey = `boundary_alert_sent_${profile.pinfl}_${dateKey}`;
+        const alreadyAlerted = localStorage.getItem(alertFlagKey) === 'true';
 
-          setCheckInTimeDisplay(timeOnly);
-          saveAttendanceRecord(profile, statusText, latitude, longitude, dateKey, timeOnly, dist);
-          sendTelegramPhotoAlert(telegramMsg, profile.photoUrl);
+        if (hasCheckedIn && !hasCheckedOut && dist > COLLEGE_CONFIG.alertBoundaryMeters && !alreadyAlerted) {
+          localStorage.setItem(alertFlagKey, 'true');
+          const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+          const alertMsg = `<b>🚨 DIQQAT! CHEGARADAN CHIQDI (400m+)</b>\n\n👤 <b>Xodim:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}\n📍 <b>Hozirgi masofa:</b> ${dist} metr\n⚠️ <b>Holat:</b> Ish vaqtida texnikum hududidan (400m) tashqariga chiqib ketdi!`;
+          
+          sendTelegramPhotoAlert(alertMsg, profile.photoUrl);
+          saveAttendanceRecord(
+            profile,
+            `${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} – Chegaradan chiqdi (${dist}m)`,
+            latitude,
+            longitude,
+            dateKey,
+            now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            dist,
+            profile.photoUrl
+          );
         }
       },
       (error) => console.error('GPS Xato:', error),
-      { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 }
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
     );
 
     return () => navigator.geolocation.clearWatch(watchId);
   }, [profile]);
 
-  const saveAttendanceRecord = (user: UserProfile, status: string, lat: number, lng: number, dateKey: string, timeOnly: string, distanceMeters: number) => {
+  // "Keldim" tugmasi bosilganda tekshiruv
+  const handleKeldimClick = () => {
+    if (!profile) {
+      alert("Avval profil ma'lumotlaringizni kiriting!");
+      return;
+    }
+    if (currentDistance === null) {
+      alert("GPS joylashuvingiz aniqlanmoqda, iltimos biroz kuting...");
+      return;
+    }
+    if (currentDistance > COLLEGE_CONFIG.checkInRadiusMeters) {
+      alert(`❌ Siz texnikum hududidan tashqaridasiz!\n\nHozirgi masofa: ${currentDistance} metr.\nDavomatdan o'tish uchun texnikumga ${COLLEGE_CONFIG.checkInRadiusMeters} metr masofagacha yaqinlashishingiz shart.`);
+      return;
+    }
+
+    const now = new Date();
+    const dateKey = now.toISOString().split('T')[0];
+    const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
+    const alreadyCheckedIn = existingLogs.some(
+      l => l.pinfl === profile.pinfl && l.dateKey === dateKey && (l.status.includes('Keldi') || l.status.includes('Kechikdi'))
+    );
+
+    if (alreadyCheckedIn) {
+      alert("Siz bugun allaqachon «Keldim» belgisini qo'ygansiz!");
+      return;
+    }
+
+    setPendingAction('keldi');
+    liveCameraInputRef.current?.click();
+  };
+
+  // "Ketdim" tugmasi bosilganda tekshiruv
+  const handleKetdimClick = () => {
+    if (!profile) {
+      alert("Avval profil ma'lumotlaringizni kiriting!");
+      return;
+    }
+    if (currentDistance === null) {
+      alert("GPS joylashuvingiz aniqlanmoqda, iltimos biroz kuting...");
+      return;
+    }
+
+    const now = new Date();
+    const hours = now.getHours();
+    const minutes = now.getMinutes();
+    const totalMinutes = hours * 60 + minutes;
+    const isSat = now.getDay() === 6;
+    const endWorkMinutes = isSat ? 13 * 60 : 16 * 60; // Shanba 13:00, boshqa kunlar 16:00
+    const limitLabel = isSat ? "13:00" : "16:00";
+
+    // 16:00 dan oldin ruxsat bermaslik
+    if (totalMinutes < endWorkMinutes) {
+      alert(`⛔ Hali ish vaqti tugamadi!\n\nKetishga faqat soat ${limitLabel} dan keyin ruxsat beriladi.`);
+      return;
+    }
+
+    // 100 metr hudud ichida bo'lishi shart
+    if (currentDistance > COLLEGE_CONFIG.checkInRadiusMeters) {
+      alert(`❌ Ketish belgisini qo'yish uchun texnikum hududida (${COLLEGE_CONFIG.checkInRadiusMeters} metr ichida) bo'lishingiz kerak!\n\nHozirgi masofa: ${currentDistance} metr.`);
+      return;
+    }
+
+    const dateKey = now.toISOString().split('T')[0];
+    const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
+    const alreadyCheckedOut = existingLogs.some(
+      l => l.pinfl === profile.pinfl && l.dateKey === dateKey && l.status.includes('Ketdi')
+    );
+
+    if (alreadyCheckedOut) {
+      alert("Siz bugun allaqachon «Ketdim» belgisini qo'ygansiz!");
+      return;
+    }
+
+    setPendingAction('ketdi');
+    liveCameraInputRef.current?.click();
+  };
+
+  // Jonli kamera rasmga olgandan keyingi jarayon
+  const handleLivePhotoCaptured = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !profile || !pendingAction) return;
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const livePhotoBase64 = reader.result as string;
+      const now = new Date();
+      const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const timeOnly = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const dateKey = now.toISOString().split('T')[0];
+      const lat = currentCoords?.lat ?? COLLEGE_CONFIG.latitude;
+      const lng = currentCoords?.lng ?? COLLEGE_CONFIG.longitude;
+      const dist = currentDistance ?? 0;
+
+      if (pendingAction === 'keldi') {
+        const totalMinutes = now.getHours() * 60 + now.getMinutes();
+        const limitMinutes = 8 * 60 + 30; // 08:30
+        const isLate = totalMinutes > limitMinutes;
+
+        const statusText = isLate
+          ? `${timeOnly} – Kechikdi (08:30 dan keyin)`
+          : `${timeOnly} – Keldi (O'z vaqtida)`;
+
+        const telegramMsg = isLate
+          ? `<b>⚠️ XODIM KECHIKIB KELDI!</b>\n\n👤 <b>F.I.Sh:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}\n📍 <b>Masofa:</b> ${dist} metr\n❗ <b>Holat:</b> 08:30 dan keyin keldi`
+          : `<b>🟢 XODIM O'Z VAQTIDA KELDI</b>\n\n👤 <b>F.I.Sh:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}\n📍 <b>Masofa:</b> ${dist} metr\n✅ <b>Holat:</b> O'z vaqtida keldi`;
+
+        setCheckInTimeDisplay(timeOnly);
+        setArrivalBadge({
+          text: isLate ? "⚠️ Kechikdingiz (08:30 dan keyin)" : "✅ O'z vaqtida keldingiz",
+          isLate,
+        });
+
+        saveAttendanceRecord(profile, statusText, lat, lng, dateKey, timeOnly, dist, livePhotoBase64);
+        sendTelegramPhotoAlert(telegramMsg, livePhotoBase64);
+        alert(isLate ? "⚠️ Kechikdingiz! Davomat jonli rasm bilan qayd etildi." : "✅ O'z vaqtida keldingiz! Davomat jonli rasm bilan qayd etildi.");
+      } else if (pendingAction === 'ketdi') {
+        const statusText = `${timeOnly} – Ketdi (${dist}m)`;
+        const telegramMsg = `<b>🔴 XODIM ISHDAN KETDI</b>\n\n👤 <b>F.I.Sh:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}\n📍 <b>Masofa:</b> ${dist} metr\n✅ <b>Holat:</b> Ish vaqti tugagach ketdi`;
+
+        setCheckOutTimeDisplay(timeOnly);
+        saveAttendanceRecord(profile, statusText, lat, lng, dateKey, timeOnly, dist, livePhotoBase64);
+        sendTelegramPhotoAlert(telegramMsg, livePhotoBase64);
+        alert("✅ Ketish vaqtingiz jonli rasm bilan tasdiqlandi!");
+      }
+
+      setPendingAction(null);
+      e.target.value = '';
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const saveAttendanceRecord = (
+    user: UserProfile,
+    status: string,
+    lat: number,
+    lng: number,
+    dateKey: string,
+    timeOnly: string,
+    distanceMeters: number,
+    livePhoto?: string
+  ) => {
     const record: AttendanceLog = {
       pinfl: user.pinfl,
       name: user.fullName,
@@ -293,7 +466,7 @@ export default function App() {
       lng,
       timestamp: new Date().toLocaleString(),
       dateKey,
-      photoUrl: user.photoUrl,
+      photoUrl: livePhoto || user.photoUrl,
       timeOnly,
       distanceMeters,
     };
@@ -342,12 +515,11 @@ export default function App() {
       console.error(err);
     }
 
-    // Telegram botga darhol xabar yuborish
     const regMsg = `<b>👤 YANGI XODIM TIZIMGA ULANDI</b>\n\n📌 <b>F.I.Sh:</b> ${nameInput}\n🆔 <b>JSHR:</b> <code>${pinflInput}</code>\n⏰ <b>Vaqt:</b> ${new Date().toLocaleTimeString()}`;
     sendTelegramPhotoAlert(regMsg, photoInput);
 
     loadData();
-    alert("Profil muvaffaqiyatli saqlandi va botga xabar yuborildi!");
+    alert("Profil saqlandi va admin botiga xabar yuborildi!");
   };
 
   const handleAdminLogin = (e: React.FormEvent) => {
@@ -388,8 +560,20 @@ export default function App() {
     }
   };
 
+  const isWithinCheckInZone = currentDistance !== null && currentDistance <= COLLEGE_CONFIG.checkInRadiusMeters;
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans pb-28 selection:bg-teal-500 selection:text-slate-950">
+      {/* Jonli kamera uchun yashirin input */}
+      <input
+        ref={liveCameraInputRef}
+        type="file"
+        accept="image/*"
+        capture="user"
+        onChange={handleLivePhotoCaptured}
+        className="hidden"
+      />
+
       <header className="bg-gradient-to-b from-slate-900 to-slate-950 px-4 pt-4 pb-6 border-b border-slate-800/60 shadow-xl">
         <div className="max-w-md mx-auto space-y-4">
           <div className="flex justify-between items-center">
@@ -472,30 +656,66 @@ export default function App() {
 
           <div className="flex justify-between items-end pt-2">
             <div>
-              <div className="text-4xl font-black text-white tracking-tight font-mono">{currentTimeStr || '07:35'}</div>
+              <div className="text-4xl font-black text-white tracking-tight font-mono">{currentTimeStr || '08:00'}</div>
               <div className="text-xs text-slate-400 capitalize font-medium">{currentDateStr || 'Payshanba, 12-noyabr'}</div>
             </div>
             <div className="bg-slate-900 border border-slate-800 px-3.5 py-2 rounded-2xl text-right shadow-inner">
-              <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider">Ish Vaqti</span>
-              <span className="text-sm font-extrabold text-teal-400 font-mono">08:30 / 16:00</span>
+              <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider">
+                {isSaturday ? 'Shanba Ish Vaqti' : 'Ish Vaqti'}
+              </span>
+              <span className="text-sm font-extrabold text-teal-400 font-mono">
+                {isSaturday ? '08:30 / 13:00' : '08:30 / 16:00'}
+              </span>
             </div>
           </div>
 
+          {/* Geozona holati (100m davomat / 400m chegara) */}
           <div className="bg-slate-900/90 border border-slate-800 p-3.5 rounded-2xl shadow-inner space-y-1">
             <div className="flex justify-between items-center text-xs">
-              <span className="font-bold flex items-center space-x-1.5 text-rose-400">
-                <span className="w-2.5 h-2.5 rounded-full bg-rose-400"></span>
-                <span>Hududdan tashqarida</span>
+              <span className={`font-bold flex items-center space-x-1.5 ${isWithinCheckInZone ? 'text-emerald-400' : 'text-rose-400'}`}>
+                <span className={`w-2.5 h-2.5 rounded-full ${isWithinCheckInZone ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`}></span>
+                <span>{isWithinCheckInZone ? 'Davomat hududidasiz (100m ichida)' : 'Davomat hududidan tashqaridasiz'}</span>
               </span>
               <span className="text-slate-400 font-mono text-[11px]">
                 {currentDistance !== null ? `${currentDistance} m` : 'GPS...'}
               </span>
             </div>
             <div className="text-[11px] text-slate-400 font-medium">
-              ⚠️ Siz texnikum hududidan tashqaridasiz
+              {isWithinCheckInZone
+                ? '✅ Tugmani bosib jonli rasm orqali belgi qo‘yishingiz mumkin'
+                : `⚠️ Davomatdan o'tish uchun 100m ichiga kiring (Chegara: 400m)`}
             </div>
           </div>
 
+          {/* KELDIM VA KETDIM TUGMALARI (JONLI RASM BILAN) */}
+          {profile && (
+            <div className="grid grid-cols-2 gap-3 pt-1">
+              <button
+                onClick={handleKeldimClick}
+                className="py-3.5 px-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 active:scale-95 text-white font-bold rounded-2xl text-xs shadow-lg flex flex-col items-center justify-center space-y-1 transition-all"
+              >
+                <span className="text-base">📸 Keldim</span>
+                <span className="text-[10px] text-emerald-100 font-normal">Jonli rasm bilan</span>
+              </button>
+
+              <button
+                onClick={handleKetdimClick}
+                className="py-3.5 px-3 bg-gradient-to-r from-rose-600 to-orange-600 hover:from-rose-500 hover:to-orange-500 active:scale-95 text-white font-bold rounded-2xl text-xs shadow-lg flex flex-col items-center justify-center space-y-1 transition-all"
+              >
+                <span className="text-base">📸 Ketdim</span>
+                <span className="text-[10px] text-rose-100 font-normal">{isSaturday ? '13:00 dan keyin' : '16:00 dan keyin'}</span>
+              </button>
+            </div>
+          )}
+
+          {/* O'z vaqtida / Kechikdingiz xabari */}
+          {arrivalBadge && (
+            <div className={`p-2.5 rounded-xl border text-center text-xs font-bold ${arrivalBadge.isLate ? 'bg-rose-500/15 border-rose-500/40 text-rose-400' : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400'}`}>
+              {arrivalBadge.text}
+            </div>
+          )}
+
+          {/* Kirish va Chiqish vaqtlari bloki */}
           <div className="grid grid-cols-2 gap-3 pt-1">
             <div className="bg-slate-900/90 border border-slate-800 p-3 rounded-2xl shadow-inner flex items-center space-x-3">
               <div className="w-9 h-9 rounded-xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-400 font-bold text-sm">
@@ -555,18 +775,19 @@ export default function App() {
 
         {activeTab === 'davomat' && (
           <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl shadow-xl space-y-3 text-center">
-            <h2 className="text-sm font-bold text-white">Sizning Holatingiz</h2>
-            <p className="text-xs text-slate-400">Davomatingiz avtomatik qayd etildi va faqat rahbar (admin) tomonidan nazorat qilinadi.</p>
-            <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 text-xs text-emerald-400 font-mono">
-              Kirish vaqti: {checkInTimeDisplay} | Masofa: {currentDistance !== null ? `${currentDistance} m` : 'Aniqlanmoqda...'}
+            <h2 className="text-sm font-bold text-white">Sizning Bugungi Holatingiz</h2>
+            <p className="text-xs text-slate-400">Davomat ma'lumotlaringiz jonli rasm bilan tasdiqlanib, admin botiga yuboriladi.</p>
+            <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 text-xs text-emerald-400 font-mono space-y-1">
+              <div>Kirish: {checkInTimeDisplay} | Chiqish: {checkOutTimeDisplay}</div>
+              <div>Masofa: {currentDistance !== null ? `${currentDistance} m` : 'Aniqlanmoqda...'}</div>
             </div>
           </div>
         )}
 
         {activeTab === 'ai' && (
           <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl shadow-xl space-y-3 text-center">
-            <h2 className="text-sm font-bold text-teal-400">AI Yordamchi Tizimi</h2>
-            <p className="text-xs text-slate-400">Avtomatik bildirishnomalar va xavfsizlik nazorati faol.</p>
+            <h2 className="text-sm font-bold text-teal-400">AI Nazorat Tizimi</h2>
+            <p className="text-xs text-slate-400">100m davomat zonasi va 400m hudud chegarasi avtomatik kuzatuvda.</p>
           </div>
         )}
 
@@ -654,7 +875,7 @@ export default function App() {
 
                 <div className="space-y-2 pt-2 border-t border-slate-800">
                   <h3 className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Davomat Qayd Etganlar:</h3>
-                  <div className="space-y-2 max-h-[200px] overflow-y-auto pr-1">
+                  <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
                     {attendanceLogs.length === 0 ? (
                       <p className="text-xs text-slate-500 text-center py-4">Yozuvlar mavjud emas.</p>
                     ) : (
@@ -666,7 +887,10 @@ export default function App() {
                           <div className="flex-1 space-y-1 overflow-hidden">
                             <div className="flex justify-between font-bold text-white">
                               <span className="truncate">{log.name}</span>
-                              <span className="text-teal-400 font-bold">📍 {log.distanceMeters ?? '?'} m uzoqlikda</span>
+                              <span className="text-teal-400 font-bold">📍 {log.distanceMeters ?? '?'} m</span>
+                            </div>
+                            <div className={`text-[10px] font-bold ${log.status.includes('Kechikdi') || log.status.includes('chiqdi') ? 'text-rose-400' : 'text-emerald-400'}`}>
+                              {log.status}
                             </div>
                             <div className="text-slate-400 font-mono text-[10px]">JSHR: {log.pinfl}</div>
                             <div className="text-slate-500 text-[10px]">{log.timestamp}</div>
