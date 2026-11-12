@@ -38,10 +38,6 @@ const COLLEGE_LAT = 38.971199;
 const COLLEGE_LNG = 66.707470;
 const GEOFENCE_RADIUS_METERS = 500;
 
-// Ish vaqti chegaralari (daqiqalarda: soat * 60 + daqiqa)
-const WORK_START_MINUTES = 8 * 60 + 30; // 08:30 -> 510 daqiqa
-const WORK_END_MINUTES = 16 * 60 + 0;   // 16:00 -> 960 daqiqa
-
 // Telegram Bot Sozlamalari
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '9241880191:AAHfYqQSQC9KOpeAfFdomyft9nhIBm-h6sk';
 const TELEGRAM_CHAT_IDS = [
@@ -51,7 +47,7 @@ const TELEGRAM_CHAT_IDS = [
   '1611805500'
 ];
 
-// Toshkent vaqtini aniq olish yordamchi funksiyasi
+// Toshkent vaqtini aniq olish va hafta kunini aniqlash
 function getTashkentTimeDetails(isoString?: string) {
   const dateObj = isoString ? new Date(isoString) : new Date();
   const tashkentDate = new Date(dateObj.toLocaleString('en-US', { timeZone: 'Asia/Tashkent' }));
@@ -61,12 +57,13 @@ function getTashkentTimeDetails(isoString?: string) {
   const day = String(tashkentDate.getDate()).padStart(2, '0');
   const hours = tashkentDate.getHours();
   const minutes = tashkentDate.getMinutes();
+  const dayOfWeek = tashkentDate.getDay(); // 0 - Yakshanba, 6 - Shanba
 
   const dateStr = `${day}.${month}.${year}`;
   const timeStr = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
   const totalMinutes = hours * 60 + minutes;
 
-  return { dateStr, timeStr, totalMinutes };
+  return { dateStr, timeStr, totalMinutes, dayOfWeek };
 }
 
 // Telegramga xabar yuborish funksiyasi
@@ -240,12 +237,15 @@ async function startServer() {
       });
     }
 
-    if (action_type !== 'Keldi' && action_type !== 'Ketdi') {
+    if (action_type !== 'Keldi' && action_type !== 'Ketish' && action_type !== 'Ketdi') {
       return res.status(400).json({
         success: false,
         error: "action_type faqat 'Keldi' yoki 'Ketdi' bo'lishi kerak."
       });
     }
+
+    // Harakat turini birxillashtirish
+    const normalizedAction = action_type === 'Ketish' ? 'Ketdi' : action_type;
 
     const cleanJshr = String(jshr).trim();
     const teacher = TEACHERS_DATABASE.find(t => t.jshr === cleanJshr);
@@ -262,14 +262,16 @@ async function startServer() {
     const distance = calculateDistanceMeters(COLLEGE_LAT, COLLEGE_LNG, lat, lng);
     const withinGeofence = distance <= GEOFENCE_RADIUS_METERS;
 
-    // Vaqtni aniqlash va intizom tekshiruvi
-    const { dateStr, timeStr, totalMinutes } = getTashkentTimeDetails(timestamp);
+    // Vaqt va hafta kunini aniqlash (0 = Yakshanba, 6 = Shanba)
+    const { dateStr, timeStr, totalMinutes, dayOfWeek } = getTashkentTimeDetails(timestamp);
     
     let timeStatus = "O'z vaqtida";
     let statusAlertEmoji = "✅";
     let extraTelegramNote = "";
 
-    if (action_type === 'Keldi') {
+    const WORK_START_MINUTES = 8 * 60 + 30; // 08:30
+
+    if (normalizedAction === 'Keldi') {
       if (totalMinutes > WORK_START_MINUTES) {
         const lateMins = totalMinutes - WORK_START_MINUTES;
         timeStatus = `Kechikdi (${lateMins} daq.)`;
@@ -278,21 +280,38 @@ async function startServer() {
       } else {
         timeStatus = "O'z vaqtida keldi";
       }
-    } else if (action_type === 'Ketdi') {
-      if (totalMinutes < WORK_END_MINUTES) {
-        const earlyMins = WORK_END_MINUTES - totalMinutes;
-        timeStatus = `Oldin chiqib ketdi (${earlyMins} daq.)`;
-        statusAlertEmoji = "⚠️";
-        extraTelegramNote = `\n🚨 <b>DIQQAT: Xodim 16:00 dan oldin chiqib ketdi! (${earlyMins} daqiqa ertaroq)</b>`;
+    } else if (normalizedAction === 'Ketdi') {
+      if (dayOfWeek === 6) {
+        // SHANBA KUNI: Tugatish vaqti 13:00 (13 * 60 = 780 daqiqa)
+        const SATURDAY_END_MINUTES = 13 * 60;
+        if (totalMinutes < SATURDAY_END_MINUTES) {
+          const earlyMins = SATURDAY_END_MINUTES - totalMinutes;
+          timeStatus = `Shanba erta ketdi (${earlyMins} daq.)`;
+          statusAlertEmoji = "⚠️";
+          extraTelegramNote = `\n🚨 <b>DIQQAT (Shanba): Xodim 13:00 dan oldin chiqib ketdi! (${earlyMins} daqiqa ertaroq)</b>`;
+        } else {
+          timeStatus = "O'z vaqtida ketdi (Shanba)";
+          extraTelegramNote = `\nℹ️ <b>Shanba kuni soat 13:00 dan keyin binodan chiqib ketdi.</b>`;
+        }
       } else {
-        timeStatus = "O'z vaqtida ketdi";
+        // DUSHANBA - JUMA KUNLARI: Tugatish vaqti 16:00 (16 * 60 = 960 daqiqa)
+        const WEEKDAY_END_MINUTES = 16 * 60;
+        if (totalMinutes < WEEKDAY_END_MINUTES) {
+          const earlyMins = WEEKDAY_END_MINUTES - totalMinutes;
+          timeStatus = `Oldin chiqib ketdi (${earlyMins} daq.)`;
+          statusAlertEmoji = "⚠️";
+          extraTelegramNote = `\n🚨 <b>DIQQAT: Xodim 16:00 dan oldin chiqib ketdi! (${earlyMins} daqiqa ertaroq)</b>`;
+        } else {
+          timeStatus = "O'z vaqtida ketdi";
+          extraTelegramNote = `\nℹ️ <b>Xodim ish vaqtidan keyin binodan chiqib ketdi.</b>`;
+        }
       }
     }
 
     const recordId = 'att-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6);
     const serverTimestamp = new Date().toISOString();
 
-    // Bazaga saqlash (SQLite orqali doimiy saqlanadi, o'chib ketmaydi)
+    // Bazaga saqlash
     const insertStmt = db.prepare(`
       INSERT INTO attendance (
         id, jshr, fio, lavozim, latitude, longitude, action_type, 
@@ -308,7 +327,7 @@ async function startServer() {
       teacher.lavozim,
       lat,
       lng,
-      action_type,
+      normalizedAction,
       dateStr,
       timeStr,
       timeStatus,
@@ -322,14 +341,14 @@ async function startServer() {
     );
 
     // TELEGRAMGA XABAR YUBORISH
-    const actionEmoji = action_type === 'Keldi' ? '🟢' : '🔴';
+    const actionEmoji = normalizedAction === 'Keldi' ? '🟢' : '🔴';
     const geoText = withinGeofence ? '✅ Kollej hududida' : '❌ Hududdan tashqarida';
     
     const telegramMsg = 
       `<b>${actionEmoji} Davomat qayd etildi!</b>\n\n` +
       `👤 <b>FIO:</b> ${teacher.fio}\n` +
       `📌 <b>Lavozim:</b> ${teacher.lavozim}\n` +
-      `📋 <b>Harakat:</b> ${action_type}\n` +
+      `📋 <b>Harakat:</b> ${normalizedAction}\n` +
       `🕒 <b>Soat:</b> ${timeStr} (${dateStr})\n` +
       `${statusAlertEmoji} <b>Intizom:</b> ${timeStatus}\n` +
       `📍 <b>Masofa:</b> ${distance}m (${geoText})` +
@@ -340,13 +359,13 @@ async function startServer() {
     return res.status(200).json({
       success: true,
       status: 'success',
-      message: `${teacher.fio}: ${action_type} (${timeStr}) - ${timeStatus}`,
+      message: `${teacher.fio}: ${normalizedAction} (${timeStr}) - ${timeStatus}`,
       data: {
         id: recordId,
         jshr: cleanJshr,
         fio: teacher.fio,
         lavozim: teacher.lavozim,
-        action_type,
+        action_type: normalizedAction,
         date_str: dateStr,
         time_str: timeStr,
         time_status: timeStatus,
@@ -387,7 +406,6 @@ async function startServer() {
     });
   });
 
-  // Birlashgan Excel / CSV hisobot (Kelgan va ketgan vaqtlari bitta qatorda)
   app.get('/api/export', (_req: Request, res: Response) => {
     const records: any[] = db.prepare('SELECT * FROM attendance ORDER BY server_timestamp ASC').all();
 
@@ -457,8 +475,8 @@ async function startServer() {
       teachers_loaded: TEACHERS_DATABASE.length,
       total_saved_records: countRow.cnt,
       database: 'SQLite (Persistent)',
-      work_hours: '08:30 - 16:00 (Tashkent Time)',
-      telegram_notifications: 'Active',
+      work_hours: 'Mon-Fri: 08:30-16:00, Sat: 08:30-13:00',
+      telegram_notifications: 'Active (Saturday 13:00 Rule Added)',
       timestamp: new Date().toISOString()
     });
   });
