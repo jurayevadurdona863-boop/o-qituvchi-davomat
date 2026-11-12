@@ -9,21 +9,26 @@ workflows:
       - name: Install dependencies
         script: |
           npm install --legacy-peer-deps
-          npm install -D @capacitor/cli @capacitor/core @capacitor/android --legacy-peer-deps
+          npm install -D @capacitor/cli @capacitor/core @capacitor/android @capacitor/geolocation --legacy-peer-deps
       - name: Build web project
         script: |
           npm run build
       - name: Prepare Android Platform
         script: |
-          npx cap add android || true
+          rm -rf android
+          npx cap add android
           npx cap sync android
-          # Android Manifest fayliga GPS ruxsatlarini avtomatik qo'shish:
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
-          if [ -f "$MANIFEST" ]; then
-            sed -i '' '/<uses-permission android:name="android.permission.INTERNET" \/>/a \
-            <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" \/>\
-            <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" \/>' "$MANIFEST"
-          fi
+          python3 -c '
+          path = "android/app/src/main/AndroidManifest.xml"
+          with open(path, "r") as f:
+              content = f.read()
+          perms = """    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+              <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+              <uses-feature android:name="android.hardware.location.gps" />"""
+          content = content.replace("<application", perms + "\n    <application", 1)
+          with open(path, "w") as f:
+              f.write(content)
+          '
       - name: Build Android APK
         script: |
           cd android
