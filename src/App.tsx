@@ -3,12 +3,13 @@ import React, { useState, useEffect } from 'react';
 const COLLEGE_CONFIG = {
   latitude: 38.971199,
   longitude: 66.707470,
-  radiusMeters: 500,
+  radiusMeters: 999999, // Hudud cheklovi olib tashlandi
 };
 
 const ADMIN_PASSWORD = "2294";
 
-const TELEGRAM_BOT_TOKEN = "9241880191:AAEGdwBHjqdBmqLv4hOrL8bIvJl2bRAV8QE";
+// Yangi token qo'shildi
+const TELEGRAM_BOT_TOKEN = "9241880191:AAHfYqQSQC9KOpeAfFdomyft9nhIBm-h6sk";
 const TELEGRAM_CHAT_IDS = [
   "1179846016",
   "727029645",
@@ -32,6 +33,7 @@ interface AttendanceLog {
   dateKey: string;
   photoUrl?: string;
   timeOnly: string;
+  distanceMeters?: number;
 }
 
 interface PendingTelegramMessage {
@@ -158,22 +160,19 @@ export default function App() {
   const [isAuthenticatedAdmin, setIsAuthenticatedAdmin] = useState<boolean>(false);
   
   const [attendanceLogs, setAttendanceLogs] = useState<AttendanceLog[]>([]);
+  const [registeredUsers, setRegisteredUsers] = useState<UserProfile[]>([]);
 
   const [pinflInput, setPinflInput] = useState('');
   const [nameInput, setNameInput] = useState('');
   const [photoInput, setPhotoInput] = useState<string | null>(null);
 
   const [currentDistance, setCurrentDistance] = useState<number | null>(null);
-  const [insideZone, setInsideZone] = useState<boolean>(false);
-  const [attendanceStatus, setAttendanceStatus] = useState<string>('Kutilmoqda...');
-  const [lastCheckTime, setLastCheckTime] = useState<string>('');
+  const [attendanceStatus, setAttendanceStatus] = useState<string>('Tayyor...');
   const [checkInTimeDisplay, setCheckInTimeDisplay] = useState<string>('--:--');
-  const [checkOutTimeDisplay, setCheckOutTimeDisplay] = useState<string>('--:--');
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
   
   const [currentTimeStr, setCurrentTimeStr] = useState<string>('');
   const [currentDateStr, setCurrentDateStr] = useState<string>('');
-  const [isSaturday, setIsSaturday] = useState<boolean>(false);
 
   useEffect(() => {
     const updateClock = () => {
@@ -181,7 +180,6 @@ export default function App() {
       setCurrentTimeStr(now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
       const options: Intl.DateTimeFormatOptions = { weekday: 'long', day: 'numeric', month: 'long' };
       setCurrentDateStr(now.toLocaleDateString('uz-UZ', options));
-      setIsSaturday(now.getDay() === 6);
     };
     updateClock();
     const timer = setInterval(updateClock, 1000);
@@ -194,24 +192,20 @@ export default function App() {
       try {
         const parsed = JSON.parse(savedProfile);
         setProfile(parsed);
-        // Agar oldindan bugungi yozuvi bo'lsa, ekran vaqtini tiklab qo'yish
         const now = new Date();
         const dateKey = now.toISOString().split('T')[0];
         const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
         const todayUserLog = existingLogs.find(l => l.pinfl === parsed.pinfl && l.dateKey === dateKey);
         if (todayUserLog) {
-          if (todayUserLog.status.includes('Keldi') || todayUserLog.status.includes('Kechikdi')) {
+          if (todayUserLog.status.includes('Belgilandi')) {
             setCheckInTimeDisplay(todayUserLog.timeOnly);
-          }
-          if (todayUserLog.status.includes('Ketdi')) {
-            setCheckOutTimeDisplay(todayUserLog.timeOnly);
           }
         }
       } catch (e) {
         console.error("Profilni o'qishda xatolik:", e);
       }
     }
-    loadLogs();
+    loadData();
 
     const handleOnline = () => {
       setIsOnline(true);
@@ -230,12 +224,15 @@ export default function App() {
     };
   }, []);
 
-  const loadLogs = () => {
+  const loadData = () => {
     try {
       const logs = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
       setAttendanceLogs([...logs].reverse());
+
+      const users = JSON.parse(localStorage.getItem('registered_users_list') || '[]');
+      setRegisteredUsers(users);
     } catch (e) {
-      console.error("Jurnalni yuklashda xatolik:", e);
+      console.error("Ma'lumotlarni yuklashda xatolik:", e);
     }
   };
 
@@ -258,67 +255,25 @@ export default function App() {
         );
         setCurrentDistance(dist);
 
-        const isInside = dist <= COLLEGE_CONFIG.radiusMeters;
         const now = new Date();
         const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         const timeOnly = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         const dateKey = now.toISOString().split('T')[0];
-        const dayOfWeek = now.getDay();
 
         const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
         const todayUserLogs = existingLogs.filter(l => l.pinfl === profile.pinfl && l.dateKey === dateKey);
         
-        const hasCheckedInToday = todayUserLogs.some(l => l.status.includes('Keldi') || l.status.includes('Kechikdi'));
-        const hasCheckedOutToday = todayUserLogs.some(l => l.status.includes('Ketdi'));
+        const hasCheckedInToday = todayUserLogs.some(l => l.status.includes('Belgilandi'));
 
-        if (isInside) {
-          setInsideZone(true);
-          setAttendanceStatus(`🎉 Tabriklaymiz, siz ishxona (texnikum) hududidasiz!`);
+        setAttendanceStatus(`✅ Joylashuv aniqlandi: ${dist} metr masofada`);
 
-          if (!hasCheckedInToday) {
-            const hours = now.getHours();
-            const minutes = now.getMinutes();
-            const totalMinutes = hours * 60 + minutes;
-            const limitMinutes = 8 * 60 + 30; // 08:30
+        if (!hasCheckedInToday) {
+          const statusText = `${timeOnly} – Belgilandi (${dist}m uzoqlikda)`;
+          const telegramMsg = `<b>🟢 XODIM DAVOMATI QAYD ETILDI</b>\n\n👤 <b>F.I.Sh:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}\n📍 <b>Masofa:</b> ${dist} metr`;
 
-            let statusText = `${timeOnly} – O'z vaqtida keldi`;
-            let telegramMsg = `<b>🟢 DAVOMAT: KELDI</b>\n\n👤 <b>Xodim:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}\n📍 <b>Holat:</b> O'z vaqtida keldi`;
-
-            if (totalMinutes > limitMinutes) {
-              statusText = `${timeOnly} – Kechikib keldi (08:30 dan keyin)`;
-              telegramMsg = `<b>⚠️ OGOHLANTIRISH: KECHIKDI!</b>\n\n👤 <b>Xodim:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}\n❗ <b>Izoh:</b> 08:30 dan keyin keldi`;
-            }
-
-            setCheckInTimeDisplay(timeOnly);
-            setLastCheckTime(timeString);
-            saveAttendanceRecord(profile, statusText, latitude, longitude, dateKey, timeOnly);
-            sendTelegramPhotoAlert(telegramMsg, profile.photoUrl);
-          }
-        } else {
-          setInsideZone(false);
-          setAttendanceStatus(`⚠️ Siz texnikum hududidan tashqaridasiz`);
-
-          if (hasCheckedInToday && !hasCheckedOutToday) {
-            const hours = now.getHours();
-            const minutes = now.getMinutes();
-            const totalMinutes = hours * 60 + minutes;
-            
-            const endWorkMinutes = dayOfWeek === 6 ? 13 * 60 : 16 * 60;
-
-            let statusText = `${timeOnly} – Vaqtida chiqib ketdi (Ish tugadi)`;
-            let telegramMsg = `<b>🔴 DAVOMAT: KETDI</b>\n\n👤 <b>Xodim:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}`;
-
-            if (totalMinutes < endWorkMinutes) {
-              const limitStr = dayOfWeek === 6 ? "13:00" : "16:00";
-              statusText = `${timeOnly} – Ruxsatsiz chiqib ketdi (${limitStr} gacha)`;
-              telegramMsg = `<b>🚨 SHOSHILINCH ALERT! RUXSATSIZ CHIQIB KETDI!</b>\n\n👤 <b>Xodim:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}\n⚠️ <b>Izoh:</b> Ish vaqti tugamasdan (${limitStr} gacha) hududdan chiqdi!`;
-            }
-
-            setCheckOutTimeDisplay(timeOnly);
-            setLastCheckTime(timeString);
-            saveAttendanceRecord(profile, statusText, latitude, longitude, dateKey, timeOnly);
-            sendTelegramPhotoAlert(telegramMsg, profile.photoUrl);
-          }
+          setCheckInTimeDisplay(timeOnly);
+          saveAttendanceRecord(profile, statusText, latitude, longitude, dateKey, timeOnly, dist);
+          sendTelegramPhotoAlert(telegramMsg, profile.photoUrl);
         }
       },
       (error) => console.error('GPS Xato:', error),
@@ -328,7 +283,7 @@ export default function App() {
     return () => navigator.geolocation.clearWatch(watchId);
   }, [profile]);
 
-  const saveAttendanceRecord = (user: UserProfile, status: string, lat: number, lng: number, dateKey: string, timeOnly: string) => {
+  const saveAttendanceRecord = (user: UserProfile, status: string, lat: number, lng: number, dateKey: string, timeOnly: string, distanceMeters: number) => {
     const record: AttendanceLog = {
       pinfl: user.pinfl,
       name: user.fullName,
@@ -339,11 +294,12 @@ export default function App() {
       dateKey,
       photoUrl: user.photoUrl,
       timeOnly,
+      distanceMeters,
     };
     const history = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
     history.push(record);
     localStorage.setItem('persistent_attendance_logs', JSON.stringify(history));
-    loadLogs();
+    loadData();
   };
 
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -374,6 +330,19 @@ export default function App() {
 
     localStorage.setItem('user_profile', JSON.stringify(newProfile));
     setProfile(newProfile);
+
+    try {
+      const users: UserProfile[] = JSON.parse(localStorage.getItem('registered_users_list') || '[]');
+      if (!users.some(u => u.pinfl === pinflInput)) {
+        users.push(newProfile);
+        localStorage.setItem('registered_users_list', JSON.stringify(users));
+      }
+    } catch (err) {
+      console.error(err);
+    }
+
+    loadData();
+    alert("Profil muvaffaqiyatli saqlandi!");
   };
 
   const handleAdminLogin = (e: React.FormEvent) => {
@@ -389,7 +358,7 @@ export default function App() {
   const handleClearLogs = () => {
     if (window.confirm("Barcha davomat tarixini o'chirmoqchimisiz?")) {
       localStorage.removeItem('persistent_attendance_logs');
-      loadLogs();
+      loadData();
     }
   };
 
@@ -399,8 +368,8 @@ export default function App() {
       return;
     }
     try {
-      const headers = "JSHR,F.I.Sh,Holat,Sana va Vaqt,GPS\n";
-      const rows = attendanceLogs.map(l => `"${l.pinfl}","${l.name}","${l.status}","${l.timestamp}","${l.lat.toFixed(4)}, ${l.lng.toFixed(4)}"`).join("\n");
+      const headers = "JSHR,F.I.Sh,Holat,Sana va Vaqt,Masofa(m),GPS\n";
+      const rows = attendanceLogs.map(l => `"${l.pinfl}","${l.name}","${l.status}","${l.timestamp}","${l.distanceMeters ?? 'Noma\'lum'}","${l.lat.toFixed(4)}, ${l.lng.toFixed(4)}"`).join("\n");
       const blob = new Blob(["\uFEFF" + headers + rows], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -502,20 +471,16 @@ export default function App() {
               <div className="text-xs text-slate-400 capitalize font-medium">{currentDateStr || 'Shanba, 7-noyabr'}</div>
             </div>
             <div className="bg-slate-900 border border-slate-800 px-3.5 py-2 rounded-2xl text-right shadow-inner">
-              <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider">
-                {isSaturday ? 'Shanba (Qisqartirilgan)' : 'Ish Vaqti'}
-              </span>
-              <span className="text-sm font-extrabold text-teal-400 font-mono">
-                {isSaturday ? '08:30 / 13:00' : '08:30 / 16:00'}
-              </span>
+              <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider">Ish Vaqti</span>
+              <span className="text-sm font-extrabold text-teal-400 font-mono">08:30 / 16:00</span>
             </div>
           </div>
 
           <div className="bg-slate-900/90 border border-slate-800 p-3.5 rounded-2xl shadow-inner space-y-1">
             <div className="flex justify-between items-center text-xs">
-              <span className={`font-bold flex items-center space-x-1.5 ${insideZone ? 'text-emerald-400' : 'text-rose-400'}`}>
-                <span className={`w-2.5 h-2.5 rounded-full ${insideZone ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`}></span>
-                <span>{insideZone ? 'Texnikum korpusi ichida' : 'Hududdan tashqarida'}</span>
+              <span className="font-bold flex items-center space-x-1.5 text-emerald-400">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span>Tizim faol</span>
               </span>
               <span className="text-slate-400 font-mono text-[11px]">
                 {currentDistance !== null ? `${currentDistance} m` : 'GPS...'}
@@ -525,95 +490,25 @@ export default function App() {
               {attendanceStatus}
             </div>
           </div>
-
-          <div className="grid grid-cols-2 gap-3 pt-1">
-            <div className="bg-slate-900/90 border border-slate-800 p-3 rounded-2xl shadow-inner flex items-center space-x-3">
-              <div className="w-9 h-9 rounded-xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-400 font-bold text-sm">
-                ➔
-              </div>
-              <div>
-                <span className="text-[10px] text-slate-400 block font-semibold">Kirish</span>
-                <span className="text-xs font-bold text-white font-mono">{checkInTimeDisplay}</span>
-              </div>
-            </div>
-            <div className="bg-slate-900/90 border border-slate-800 p-3 rounded-2xl shadow-inner flex items-center space-x-3">
-              <div className="w-9 h-9 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 font-bold text-sm">
-                ←
-              </div>
-              <div>
-                <span className="text-[10px] text-slate-400 block font-semibold">Chiqish</span>
-                <span className="text-xs font-bold text-white font-mono">{checkOutTimeDisplay}</span>
-              </div>
-            </div>
-          </div>
         </div>
       </header>
 
       <main className="flex-1 p-4 max-w-md mx-auto w-full space-y-4">
         {activeTab === 'asosiy' && (
           <div className="space-y-4">
-            <div className="grid grid-cols-3 gap-2.5">
-              <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl text-center shadow-md space-y-1">
-                <span className="w-5 h-5 mx-auto bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center text-[10px] font-bold">✓</span>
-                <div className="text-xl font-black text-white font-mono">{attendanceLogs.length}</div>
-                <div className="text-[10px] text-slate-400 font-medium">Qatnashgan</div>
-              </div>
-              <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl text-center shadow-md space-y-1">
-                <span className="w-5 h-5 mx-auto bg-rose-500/20 text-rose-400 rounded-full flex items-center justify-center text-[10px] font-bold">!</span>
-                <div className="text-xl font-black text-white font-mono">0</div>
-                <div className="text-[10px] text-slate-400 font-medium">Qoldirilgan</div>
-              </div>
-              <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl text-center shadow-md space-y-1">
-                <span className="w-5 h-5 mx-auto bg-indigo-500/20 text-indigo-400 rounded-full flex items-center justify-center text-[10px] font-bold">i</span>
-                <div className="text-xl font-black text-white font-mono">96</div>
-                <div className="text-[10px] text-slate-400 font-medium">Jami soat</div>
-              </div>
-            </div>
-
-            <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl shadow-md space-y-2">
-              <div className="flex justify-between items-center text-xs">
-                <span className="font-bold text-white">Ish qoldirish chegarasi</span>
-                <span className="font-mono text-teal-400 font-bold">0 / 18 soat</span>
-              </div>
-              <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-slate-800">
-                <div className="bg-teal-500 h-full w-0"></div>
-              </div>
-              <p className="text-[10px] text-slate-400 font-medium">Yana 18 soat ish qoldirilsa, profil bloklanadi.</p>
+            <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl shadow-xl text-center space-y-2">
+              <h2 className="text-sm font-bold text-teal-400">Xush kelibsiz!</h2>
+              <p className="text-xs text-slate-400">Sizning davomatingiz va joylashuvingiz muvaffaqiyatli kuzatilmoqda.</p>
             </div>
           </div>
         )}
 
         {activeTab === 'davomat' && (
-          <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl shadow-xl space-y-4">
-            <div className="flex justify-between items-center flex-wrap gap-2">
-              <h2 className="text-sm font-bold text-white">Doimiy Davomat Jurnali</h2>
-              <button onClick={handleExportCSV} className="text-xs bg-teal-600 hover:bg-teal-500 text-white px-3 py-1.5 rounded-xl font-medium shadow">
-                📥 Excel/CSV yuklab olish
-              </button>
-            </div>
-            <div className="space-y-2.5 max-h-[400px] overflow-y-auto pr-1">
-              {attendanceLogs.length === 0 ? (
-                <p className="text-xs text-slate-500 text-center py-8">Hozircha davomat yozuvlari mavjud emas.</p>
-              ) : (
-                attendanceLogs.map((log, index) => (
-                  <div key={index} className="bg-slate-950 p-3 rounded-2xl border border-slate-800 text-xs flex items-center space-x-3">
-                    {log.photoUrl && (
-                      <img src={log.photoUrl} alt={log.name} className="w-11 h-11 rounded-xl object-cover border border-teal-500/50 flex-shrink-0" />
-                    )}
-                    <div className="flex-1 space-y-1 overflow-hidden">
-                      <div className="flex justify-between font-bold text-white">
-                        <span className="truncate">{log.name}</span>
-                        <span className={log.status.includes('O\'z vaqtida') ? 'text-emerald-400' : 'text-rose-400'}>{log.status}</span>
-                      </div>
-                      <div className="text-slate-400 font-mono text-[10px]">JSHR: {log.pinfl}</div>
-                      <div className="text-slate-500 text-[10px] flex justify-between">
-                        <span>Vaqt: {log.timestamp}</span>
-                        <span>GPS: {log.lat.toFixed(4)}, {log.lng.toFixed(4)}</span>
-                      </div>
-                    </div>
-                  </div>
-                ))
-              )}
+          <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl shadow-xl space-y-3 text-center">
+            <h2 className="text-sm font-bold text-white">Sizning Holatingiz</h2>
+            <p className="text-xs text-slate-400">Davomatingiz avtomatik qayd etildi va faqat rahbar (admin) tomonidan nazorat qilinadi.</p>
+            <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 text-xs text-emerald-400 font-mono">
+              Vaqt: {checkInTimeDisplay} | Masofa: {currentDistance !== null ? `${currentDistance} m` : 'Aniqlanmoqda...'}
             </div>
           </div>
         )}
@@ -621,20 +516,14 @@ export default function App() {
         {activeTab === 'ai' && (
           <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl shadow-xl space-y-3 text-center">
             <h2 className="text-sm font-bold text-teal-400">AI Yordamchi Tizimi</h2>
-            <p className="text-xs text-slate-400">Texnikum davomati va vaqtni avtomatik nazorat qilish uchun sun'iy intellekt moduli faol ishlamoqda.</p>
-            <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 text-xs text-emerald-400 font-mono">
-              🟢 Barcha qoidalar va geozona nazoratda.
-            </div>
+            <p className="text-xs text-slate-400">Avtomatik bildirishnomalar va xavfsizlik nazorati faol.</p>
           </div>
         )}
 
         {activeTab === 'fanlar' && (
           <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl shadow-xl space-y-3">
             <h2 className="text-sm font-bold text-white">Texnikum Fanlari va Bo'limlari</h2>
-            <p className="text-xs text-slate-400">O'qituvchilar va dars jadvallari ro'yxati.</p>
-            <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 text-xs text-slate-300">
-              • Asosiy fanlar va dars taqsimoti yuklangan.
-            </div>
+            <p className="text-xs text-slate-400">O'qituvchilar va dars jadvallari.</p>
           </div>
         )}
 
@@ -694,26 +583,48 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="space-y-2 max-h-[350px] overflow-y-auto pr-1">
-                  {attendanceLogs.length === 0 ? (
-                    <p className="text-xs text-slate-500 text-center py-6">Yozuvlar mavjud emas.</p>
-                  ) : (
-                    attendanceLogs.map((log, index) => (
-                      <div key={index} className="bg-slate-950 p-3 rounded-2xl border border-slate-800 text-xs flex items-center space-x-3">
-                        {log.photoUrl && (
-                          <img src={log.photoUrl} alt={log.name} className="w-10 h-10 rounded-xl object-cover border border-rose-500/50 flex-shrink-0" />
-                        )}
-                        <div className="flex-1 space-y-0.5 overflow-hidden">
-                          <div className="flex justify-between font-bold text-white">
-                            <span className="truncate">{log.name}</span>
-                            <span className={log.status.includes('O\'z vaqtida') ? 'text-emerald-400' : 'text-rose-400'}>{log.status}</span>
+                <div className="space-y-3">
+                  <h3 className="text-xs font-bold text-teal-400 uppercase tracking-wider">Ilovaga Ulangan Xodimlar ({registeredUsers.length}):</h3>
+                  <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
+                    {registeredUsers.length === 0 ? (
+                      <p className="text-xs text-slate-500 text-center py-3">Hozircha ulangan xodimlar yo'q.</p>
+                    ) : (
+                      registeredUsers.map((u, i) => (
+                        <div key={i} className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 text-xs flex items-center space-x-2.5">
+                          {u.photoUrl && <img src={u.photoUrl} alt="" className="w-8 h-8 rounded-lg object-cover" />}
+                          <div className="overflow-hidden">
+                            <div className="font-bold text-white truncate">{u.fullName}</div>
+                            <div className="text-[10px] text-slate-400 font-mono">JSHR: {u.pinfl}</div>
                           </div>
-                          <div className="text-slate-400 font-mono text-[10px]">JSHR: {log.pinfl}</div>
-                          <div className="text-slate-500 text-[10px]">{log.timestamp}</div>
                         </div>
-                      </div>
-                    ))
-                  )}
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-2 pt-2 border-t border-slate-800">
+                  <h3 className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Davomat Qayd Etganlar:</h3>
+                  <div className="space-y-2 max-h-[200px] overflow-y-auto pr-1">
+                    {attendanceLogs.length === 0 ? (
+                      <p className="text-xs text-slate-500 text-center py-4">Yozuvlar mavjud emas.</p>
+                    ) : (
+                      attendanceLogs.map((log, index) => (
+                        <div key={index} className="bg-slate-950 p-3 rounded-2xl border border-slate-800 text-xs flex items-center space-x-3">
+                          {log.photoUrl && (
+                            <img src={log.photoUrl} alt={log.name} className="w-10 h-10 rounded-xl object-cover border border-rose-500/50 flex-shrink-0" />
+                          )}
+                          <div className="flex-1 space-y-1 overflow-hidden">
+                            <div className="flex justify-between font-bold text-white">
+                              <span className="truncate">{log.name}</span>
+                              <span className="text-teal-400 font-bold">📍 {log.distanceMeters ?? '?'} m uzoqlikda</span>
+                            </div>
+                            <div className="text-slate-400 font-mono text-[10px]">JSHR: {log.pinfl}</div>
+                            <div className="text-slate-500 text-[10px]">{log.timestamp}</div>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
                 </div>
               </div>
             )}
@@ -743,7 +654,7 @@ export default function App() {
           className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'ai' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
         >
           <span className="text-sm">🤖</span>
-          <span className="text-[9px] font-bold">AI</span>
+          <span className="text-[9px] font-bold">Davomati</span>
         </button>
 
         <button
