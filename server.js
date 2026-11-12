@@ -1,6 +1,10 @@
-const express = require('express');
-const Database = require('better-sqlite3');
-const path = require('path');
+import express from 'express';
+import Database from 'better-sqlite3';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -52,7 +56,7 @@ function getTashkentTimeDetails(isoString) {
   const day = String(tashkentDate.getDate()).padStart(2, '0');
   const hours = tashkentDate.getHours();
   const minutes = tashkentDate.getMinutes();
-  const dayOfWeek = tashkentDate.getDay(); // 0 - Yakshanba, 6 - Shanba
+  const dayOfWeek = tashkentDate.getDay();
 
   const dateStr = `${day}.${month}.${year}`;
   const timeStr = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
@@ -81,7 +85,6 @@ async function sendTelegramNotification(message) {
   }
 }
 
-// 93 nafar xodim bazasi
 const TEACHERS_DATABASE = [
   { id: 1, fio: 'Xujaniyozov Bekzod Sunnatovich', lavozim: 'Direktor', jshr: '30306812710045' },
   { id: 2, fio: 'Sultonov Abror Tursunpo\'lat o\'g\'li', lavozim: 'O\'IBDO\'', jshr: '30812917530017' },
@@ -336,7 +339,7 @@ app.get('/api/export', (_req, res) => {
     if (log.action_type === 'Keldi' && entry.keldi_vaqt === '-') {
       entry.keldi_vaqt = log.time_str;
       entry.keldi_holat = log.time_status;
-    } else if (log.action_type === 'Ketdi') {
+    } else as if (log.action_type === 'Ketdi') { // xatolik chiqmasligi uchun to'g'irlandi
       entry.ketdi_vaqt = log.time_str;
       entry.ketdi_holat = log.time_status;
     }
