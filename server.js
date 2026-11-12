@@ -1,18 +1,12 @@
-import express from 'express';
-import Database from 'better-sqlite3';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const express = require('express');
+const Database = require('better-sqlite3');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// SQLite bazasini ochish
 const db = new Database('attendance.db');
 
-// Jadvalni yaratish
 db.exec(`
   CREATE TABLE IF NOT EXISTS attendance (
     id TEXT PRIMARY KEY,
@@ -38,49 +32,35 @@ db.exec(`
 const COLLEGE_LAT = 38.971199;
 const COLLEGE_LNG = 66.707470;
 const GEOFENCE_RADIUS_METERS = 500;
-
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '9241880191:AAHfYqQSQC9KOpeAfFdomyft9nhIBm-h6sk';
-const TELEGRAM_CHAT_IDS = [
-  '1179846016',
-  '727029645',
-  '1838498079',
-  '1611805500'
-];
+const TELEGRAM_CHAT_IDS = ['1179846016', '727029645', '1838498079', '1611805500'];
 
 function getTashkentTimeDetails(isoString) {
   const dateObj = isoString ? new Date(isoString) : new Date();
   const tashkentDate = new Date(dateObj.toLocaleString('en-US', { timeZone: 'Asia/Tashkent' }));
-  
   const year = tashkentDate.getFullYear();
   const month = String(tashkentDate.getMonth() + 1).padStart(2, '0');
   const day = String(tashkentDate.getDate()).padStart(2, '0');
   const hours = tashkentDate.getHours();
   const minutes = tashkentDate.getMinutes();
   const dayOfWeek = tashkentDate.getDay();
-
   const dateStr = `${day}.${month}.${year}`;
   const timeStr = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
   const totalMinutes = hours * 60 + minutes;
-
   return { dateStr, timeStr, totalMinutes, dayOfWeek };
 }
 
 async function sendTelegramNotification(message) {
   if (!TELEGRAM_BOT_TOKEN) return;
-  
   for (const chatId of TELEGRAM_CHAT_IDS) {
     try {
       await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text: message,
-          parse_mode: 'HTML'
-        })
+        body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: 'HTML' })
       });
     } catch (err) {
-      console.error(`Telegram xabar yuborishda xatolik (${chatId}):`, err);
+      console.error('Telegram xatolik:', err);
     }
   }
 }
@@ -183,16 +163,11 @@ function calculateDistanceMeters(lat1, lon1, lat2, lon2) {
   const R = 6371000;
   const dLat = (lat2 - lat1) * Math.PI / 180;
   const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-    Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return Math.round(R * c * 10) / 10;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * 10) / 10;
 }
 
 app.use(express.json());
-
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -207,7 +182,6 @@ app.get('/api/teachers', (_req, res) => {
 
 app.post('/check-attendance', async (req, res) => {
   const { jshr, latitude, longitude, action_type, timestamp, device_info, synced_from_offline } = req.body;
-
   if (!jshr || latitude === undefined || longitude === undefined || !action_type) {
     return res.status(400).json({ success: false, error: 'Parametrlar yetishmayapti.' });
   }
@@ -217,25 +191,20 @@ app.post('/check-attendance', async (req, res) => {
   const teacher = TEACHERS_DATABASE.find(t => t.jshr === cleanJshr);
 
   if (!teacher) {
-    return res.status(404).json({ success: false, error: `PNFL (${cleanJshr}) topilmadi.` });
+    return res.status(404).json({ success: false, error: `PNFL topilmadi.` });
   }
 
-  const lat = Number(latitude);
-  const lng = Number(longitude);
-  const distance = calculateDistanceMeters(COLLEGE_LAT, COLLEGE_LNG, lat, lng);
+  const distance = calculateDistanceMeters(COLLEGE_LAT, COLLEGE_LNG, Number(latitude), Number(longitude));
   const withinGeofence = distance <= GEOFENCE_RADIUS_METERS;
-
   const { dateStr, timeStr, totalMinutes, dayOfWeek } = getTashkentTimeDetails(timestamp);
   
   let timeStatus = "O'z vaqtida";
   let statusAlertEmoji = "✅";
   let extraTelegramNote = "";
 
-  const WORK_START_MINUTES = 8 * 60 + 30; // 08:30
-
   if (normalizedAction === 'Keldi') {
-    if (totalMinutes > WORK_START_MINUTES) {
-      const lateMins = totalMinutes - WORK_START_MINUTES;
+    if (totalMinutes > 510) {
+      const lateMins = totalMinutes - 510;
       timeStatus = `Kechikdi (${lateMins} daq.)`;
       statusAlertEmoji = "⚠️";
       extraTelegramNote = `\n🚨 <b>DIQQAT: Xodim 08:30 dan kechikib keldi! (${lateMins} daqiqa)</b>`;
@@ -244,9 +213,8 @@ app.post('/check-attendance', async (req, res) => {
     }
   } else if (normalizedAction === 'Ketdi') {
     if (dayOfWeek === 6) {
-      const SATURDAY_END_MINUTES = 13 * 60; // 13:00
-      if (totalMinutes < SATURDAY_END_MINUTES) {
-        const earlyMins = SATURDAY_END_MINUTES - totalMinutes;
+      if (totalMinutes < 780) {
+        const earlyMins = 780 - totalMinutes;
         timeStatus = `Shanba erta ketdi (${earlyMins} daq.)`;
         statusAlertEmoji = "⚠️";
         extraTelegramNote = `\n🚨 <b>DIQQAT (Shanba): Xodim 13:00 dan oldin chiqib ketdi! (${earlyMins} daqiqa ertaroq)</b>`;
@@ -255,9 +223,8 @@ app.post('/check-attendance', async (req, res) => {
         extraTelegramNote = `\nℹ️ <b>Shanba kuni soat 13:00 dan keyin binodan chiqib ketdi.</b>`;
       }
     } else {
-      const WEEKDAY_END_MINUTES = 16 * 60; // 16:00
-      if (totalMinutes < WEEKDAY_END_MINUTES) {
-        const earlyMins = WEEKDAY_END_MINUTES - totalMinutes;
+      if (totalMinutes < 960) {
+        const earlyMins = 960 - totalMinutes;
         timeStatus = `Oldin chiqib ketdi (${earlyMins} daq.)`;
         statusAlertEmoji = "⚠️";
         extraTelegramNote = `\n🚨 <b>DIQQAT: Xodim 16:00 dan oldin chiqib ketdi! (${earlyMins} daqiqa ertaroq)</b>`;
@@ -280,7 +247,7 @@ app.post('/check-attendance', async (req, res) => {
   `);
 
   insertStmt.run(
-    recordId, cleanJshr, teacher.fio, teacher.lavozim, lat, lng,
+    recordId, cleanJshr, teacher.fio, teacher.lavozim, Number(latitude), Number(longitude),
     normalizedAction, dateStr, timeStr, timeStatus,
     timestamp || serverTimestamp, serverTimestamp, distance,
     withinGeofence ? 1 : 0, device_info || 'Mobile Device',
@@ -290,7 +257,6 @@ app.post('/check-attendance', async (req, res) => {
 
   const actionEmoji = normalizedAction === 'Keldi' ? '🟢' : '🔴';
   const geoText = withinGeofence ? '✅ Kollej hududida' : '❌ Hududdan tashqarida';
-  
   const telegramMsg = 
     `<b>${actionEmoji} Davomat qayd etildi!</b>\n\n` +
     `👤 <b>FIO:</b> ${teacher.fio}\n` +
@@ -303,10 +269,7 @@ app.post('/check-attendance', async (req, res) => {
 
   await sendTelegramNotification(telegramMsg);
 
-  return res.json({
-    success: true,
-    message: `${teacher.fio}: ${normalizedAction} (${timeStr}) - ${timeStatus}`
-  });
+  return res.json({ success: true, message: `${teacher.fio}: ${normalizedAction} (${timeStr}) - ${timeStatus}` });
 });
 
 app.get('/api/attendance-history', (req, res) => {
@@ -316,30 +279,22 @@ app.get('/api/attendance-history', (req, res) => {
 
 app.get('/api/export', (_req, res) => {
   const records = db.prepare('SELECT * FROM attendance ORDER BY server_timestamp ASC').all();
-  if (records.length === 0) {
-    return res.status(404).json({ success: false, error: 'Ma\'lumotlar mavjud emas!' });
-  }
+  if (records.length === 0) return res.status(404).json({ success: false, error: 'Ma\'lumotlar mavjud emas!' });
 
   const groupedMap = new Map();
   for (const log of records) {
     const key = `${log.date_str}_${log.jshr}`;
     if (!groupedMap.has(key)) {
       groupedMap.set(key, {
-        date: log.date_str,
-        jshr: log.jshr,
-        fio: log.fio,
-        lavozim: log.lavozim,
-        keldi_vaqt: '-',
-        keldi_holat: 'Kelmagan',
-        ketdi_vaqt: '-',
-        ketdi_holat: 'Ketmagan'
+        date: log.date_str, jshr: log.jshr, fio: log.fio, lavozim: log.lavozim,
+        keldi_vaqt: '-', keldi_holat: 'Kelmagan', ketdi_vaqt: '-', ketdi_holat: 'Ketmagan'
       });
     }
     const entry = groupedMap.get(key);
     if (log.action_type === 'Keldi' && entry.keldi_vaqt === '-') {
       entry.keldi_vaqt = log.time_str;
       entry.keldi_holat = log.time_status;
-    } else as if (log.action_type === 'Ketdi') { // xatolik chiqmasligi uchun to'g'irlandi
+    } else if (log.action_type === 'Ketdi') {
       entry.ketdi_vaqt = log.time_str;
       entry.ketdi_holat = log.time_status;
     }
