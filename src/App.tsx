@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 const COLLEGE_CONFIG = {
   latitude: 38.971199,
   longitude: 66.707470,
-  radiusMeters: 999999, // Hudud cheklovi olib tashlandi
+  radiusMeters: 999999,
 };
 
 const ADMIN_PASSWORD = "2294";
@@ -266,7 +266,7 @@ export default function App() {
         
         const hasCheckedInToday = todayUserLogs.some(l => l.status.includes('Keldi') || l.status.includes('Belgilandi'));
 
-        setAttendanceStatus(`✅ Joylashuv aniqlandi: ${dist} metr masofada`);
+        setAttendanceStatus(`Siz texnikum hududidan tashqaridasiz (${dist} m)`);
 
         if (!hasCheckedInToday) {
           const statusText = `${timeOnly} – Keldi (${dist}m uzoqlikda)`;
@@ -337,13 +337,17 @@ export default function App() {
       if (!users.some(u => u.pinfl === pinflInput)) {
         users.push(newProfile);
         localStorage.setItem('registered_users_list', JSON.stringify(users));
+
+        // Yangi xodim ulanganda Telegram botga xabar yuborish
+        const regMsg = `<b>👤 YANGI XODIM TIZIMGA ULANDI</b>\n\n📌 <b>F.I.Sh:</b> ${nameInput}\n🆔 <b>JSHR:</b> <code>${pinflInput}</code>\n⏰ <b>Vaqt:</b> ${new Date().toLocaleTimeString()}`;
+        sendTelegramPhotoAlert(regMsg, photoInput);
       }
     } catch (err) {
       console.error(err);
     }
 
     loadData();
-    alert("Profil muvaffaqiyatli saqlandi!");
+    alert("Profil muvaffaqiyatli saqlandi va botga xabar yuborildi!");
   };
 
   const handleAdminLogin = (e: React.FormEvent) => {
@@ -479,20 +483,19 @@ export default function App() {
 
           <div className="bg-slate-900/90 border border-slate-800 p-3.5 rounded-2xl shadow-inner space-y-1">
             <div className="flex justify-between items-center text-xs">
-              <span className="font-bold flex items-center space-x-1.5 text-emerald-400">
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span>Tizim faol</span>
+              <span className="font-bold flex items-center space-x-1.5 text-rose-400">
+                <span className="w-2.5 h-2.5 rounded-full bg-rose-400"></span>
+                <span>Hududdan tashqarida</span>
               </span>
               <span className="text-slate-400 font-mono text-[11px]">
                 {currentDistance !== null ? `${currentDistance} m` : 'GPS...'}
               </span>
             </div>
             <div className="text-[11px] text-slate-400 font-medium">
-              {attendanceStatus}
+              ⚠️ Siz texnikum hududidan tashqaridasiz
             </div>
           </div>
 
-          {/* Qaytadan qo'shilgan Kirish va Chiqish vaqtlari bloki */}
           <div className="grid grid-cols-2 gap-3 pt-1">
             <div className="bg-slate-900/90 border border-slate-800 p-3 rounded-2xl shadow-inner flex items-center space-x-3">
               <div className="w-9 h-9 rounded-xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-400 font-bold text-sm">
@@ -519,9 +522,33 @@ export default function App() {
       <main className="flex-1 p-4 max-w-md mx-auto w-full space-y-4">
         {activeTab === 'asosiy' && (
           <div className="space-y-4">
-            <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl shadow-xl text-center space-y-2">
-              <h2 className="text-sm font-bold text-teal-400">Xush kelibsiz!</h2>
-              <p className="text-xs text-slate-400">Sizning davomatingiz va joylashuvingiz muvaffaqiyatli kuzatilmoqda.</p>
+            <div className="grid grid-cols-3 gap-2.5">
+              <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl text-center shadow-md space-y-1">
+                <span className="w-5 h-5 mx-auto bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center text-[10px] font-bold">✓</span>
+                <div className="text-xl font-black text-white font-mono">{attendanceLogs.length}</div>
+                <div className="text-[10px] text-slate-400 font-medium">Qatnashgan</div>
+              </div>
+              <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl text-center shadow-md space-y-1">
+                <span className="w-5 h-5 mx-auto bg-rose-500/20 text-rose-400 rounded-full flex items-center justify-center text-[10px] font-bold">!</span>
+                <div className="text-xl font-black text-white font-mono">0</div>
+                <div className="text-[10px] text-slate-400 font-medium">Qoldirilgan</div>
+              </div>
+              <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl text-center shadow-md space-y-1">
+                <span className="w-5 h-5 mx-auto bg-indigo-500/20 text-indigo-400 rounded-full flex items-center justify-center text-[10px] font-bold">i</span>
+                <div className="text-xl font-black text-white font-mono">96</div>
+                <div className="text-[10px] text-slate-400 font-medium">Jami soat</div>
+              </div>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl shadow-md space-y-2">
+              <div className="flex justify-between items-center text-xs">
+                <span className="font-bold text-white">Ish qoldirish chegarasi</span>
+                <span className="font-mono text-teal-400 font-bold">0 / 18 soat</span>
+              </div>
+              <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-slate-800">
+                <div className="bg-teal-500 h-full w-0"></div>
+              </div>
+              <p className="text-[10px] text-slate-400 font-medium">Yana 18 soat ish qoldirilsa, profil bloklanadi.</p>
             </div>
           </div>
         )}
@@ -531,7 +558,7 @@ export default function App() {
             <h2 className="text-sm font-bold text-white">Sizning Holatingiz</h2>
             <p className="text-xs text-slate-400">Davomatingiz avtomatik qayd etildi va faqat rahbar (admin) tomonidan nazorat qilinadi.</p>
             <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 text-xs text-emerald-400 font-mono">
-              Kelish: {checkInTimeDisplay} | Masofa: {currentDistance !== null ? `${currentDistance} m` : 'Aniqlanmoqda...'}
+              Kirish vaqti: {checkInTimeDisplay} | Masofa: {currentDistance !== null ? `${currentDistance} m` : 'Aniqlanmoqda...'}
             </div>
           </div>
         )}
@@ -689,7 +716,7 @@ export default function App() {
         </button>
 
         <button
-          onClick={() => setActiveTab('profil')}
+          onClick={() => setActiveTab('profil') }
           className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'profil' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
         >
           <span className="text-sm">👤</span>
