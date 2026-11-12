@@ -2,16 +2,43 @@ import express, { Request, Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import Database from 'better-sqlite3';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// SQLite bazasini ishga tushirish (fayl server papkasida avtomatik hosil bo'ladi)
+const db = new Database('attendance.db');
+
+// Ma'lumotlar bazasi jadvallarini yaratish
+db.exec(`
+  CREATE TABLE IF NOT EXISTS attendance (
+    id TEXT PRIMARY KEY,
+    jshr TEXT,
+    fio TEXT,
+    lavozim TEXT,
+    latitude REAL,
+    longitude REAL,
+    action_type TEXT,
+    date_str TEXT,
+    time_str TEXT,
+    time_status TEXT,
+    timestamp TEXT,
+    server_timestamp TEXT,
+    distance_meters REAL,
+    within_geofence INTEGER,
+    device_info TEXT,
+    ip TEXT,
+    synced_from_offline INTEGER
+  )
+`);
 
 // Texnikum koordinatalari: Yakkabog'
 const COLLEGE_LAT = 38.971199;
 const COLLEGE_LNG = 66.707470;
 const GEOFENCE_RADIUS_METERS = 500;
 
-// Ish vaqti chegaralari (daqiqalarda hisoblanadi: soat * 60 + daqiqa)
+// Ish vaqti chegaralari (daqiqalarda: soat * 60 + daqiqa)
 const WORK_START_MINUTES = 8 * 60 + 30; // 08:30 -> 510 daqiqa
 const WORK_END_MINUTES = 16 * 60 + 0;   // 16:00 -> 960 daqiqa
 
@@ -27,7 +54,6 @@ const TELEGRAM_CHAT_IDS = [
 // Toshkent vaqtini aniq olish yordamchi funksiyasi
 function getTashkentTimeDetails(isoString?: string) {
   const dateObj = isoString ? new Date(isoString) : new Date();
-  // Toshkent vaqti (UTC+5)
   const tashkentDate = new Date(dateObj.toLocaleString('en-US', { timeZone: 'Asia/Tashkent' }));
   
   const year = tashkentDate.getFullYear();
@@ -179,28 +205,6 @@ function calculateDistanceMeters(lat1: number, lon1: number, lat2: number, lon2:
   return Math.round(R * c * 10) / 10;
 }
 
-interface AttendanceRecord {
-  id: string;
-  jshr: string;
-  fio: string;
-  lavozim: string;
-  latitude: number;
-  longitude: number;
-  action_type: 'Keldi' | 'Ketdi';
-  date_str: string;
-  time_str: string;
-  time_status: string; // 'O\'z vaqtida', 'Kechikdi', 'Vaqtida ketdi', 'Oldin chiqib ketdi'
-  timestamp: string;
-  server_timestamp: string;
-  distance_meters: number;
-  within_geofence: boolean;
-  device_info?: string;
-  ip?: string;
-  synced_from_offline?: boolean;
-}
-
-const attendanceLogs: AttendanceRecord[] = [];
-
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
@@ -258,7 +262,7 @@ async function startServer() {
     const distance = calculateDistanceMeters(COLLEGE_LAT, COLLEGE_LNG, lat, lng);
     const withinGeofence = distance <= GEOFENCE_RADIUS_METERS;
 
-    // Vaqtni aniqlash va kechikish / oldin ketishni tekshirish
+    // Vaqtni aniqlash va intizom tekshiruvi
     const { dateStr, timeStr, totalMinutes } = getTashkentTimeDetails(timestamp);
     
     let timeStatus = "O'z vaqtida";
@@ -285,31 +289,37 @@ async function startServer() {
       }
     }
 
-    const record: AttendanceRecord = {
-      id: 'att-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6),
-      jshr: cleanJshr,
-      fio: teacher.fio,
-      lavozim: teacher.lavozim,
-      latitude: lat,
-      longitude: lng,
+    const recordId = 'att-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6);
+    const serverTimestamp = new Date().toISOString();
+
+    // Bazaga saqlash (SQLite orqali doimiy saqlanadi, o'chib ketmaydi)
+    const insertStmt = db.prepare(`
+      INSERT INTO attendance (
+        id, jshr, fio, lavozim, latitude, longitude, action_type, 
+        date_str, time_str, time_status, timestamp, server_timestamp, 
+        distance_meters, within_geofence, device_info, ip, synced_from_offline
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    insertStmt.run(
+      recordId,
+      cleanJshr,
+      teacher.fio,
+      teacher.lavozim,
+      lat,
+      lng,
       action_type,
-      date_str: dateStr,
-      time_str: timeStr,
-      time_status: timeStatus,
-      timestamp: timestamp || new Date().toISOString(),
-      server_timestamp: new Date().toISOString(),
-      distance_meters: distance,
-      within_geofence: withinGeofence,
-      device_info: device_info || req.headers['user-agent'] || 'Flutter Android Device',
-      ip: (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1',
-      synced_from_offline: !!synced_from_offline
-    };
-
-    attendanceLogs.unshift(record);
-
-    if (attendanceLogs.length > 1000) {
-      attendanceLogs.pop();
-    }
+      dateStr,
+      timeStr,
+      timeStatus,
+      timestamp || serverTimestamp,
+      serverTimestamp,
+      distance,
+      withinGeofence ? 1 : 0,
+      device_info || req.headers['user-agent'] || 'Flutter Android Device',
+      (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1',
+      synced_from_offline ? 1 : 0
+    );
 
     // TELEGRAMGA XABAR YUBORISH
     const actionEmoji = action_type === 'Keldi' ? '🟢' : '🔴';
@@ -331,13 +341,17 @@ async function startServer() {
       success: true,
       status: 'success',
       message: `${teacher.fio}: ${action_type} (${timeStr}) - ${timeStatus}`,
-      data: record,
-      geofence: {
-        college_lat: COLLEGE_LAT,
-        college_lng: COLLEGE_LNG,
-        allowed_radius_meters: GEOFENCE_RADIUS_METERS,
-        calculated_distance_meters: distance,
-        is_inside: withinGeofence
+      data: {
+        id: recordId,
+        jshr: cleanJshr,
+        fio: teacher.fio,
+        lavozim: teacher.lavozim,
+        action_type,
+        date_str: dateStr,
+        time_str: timeStr,
+        time_status: timeStatus,
+        distance_meters: distance,
+        within_geofence
       }
     });
   });
@@ -346,13 +360,20 @@ async function startServer() {
     const jshr = req.query.jshr as string;
     const fio = req.query.fio as string;
     
-    let list = attendanceLogs;
+    let query = 'SELECT * FROM attendance WHERE 1=1';
+    const params: any[] = [];
+
     if (jshr) {
-      list = list.filter(item => item.jshr === jshr);
+      query += ' AND jshr = ?';
+      params.push(jshr);
     }
     if (fio) {
-      list = list.filter(item => item.fio && item.fio.toLowerCase().includes(fio.toLowerCase()));
+      query += ' AND fio LIKE ?';
+      params.push(`%${fio}%`);
     }
+
+    query += ' ORDER BY server_timestamp DESC LIMIT 500';
+    const records = db.prepare(query).all(...params);
 
     res.json({
       success: true,
@@ -361,18 +382,19 @@ async function startServer() {
         longitude: COLLEGE_LNG,
         radius: GEOFENCE_RADIUS_METERS
       },
-      count: list.length,
-      records: list
+      count: records.length,
+      records
     });
   });
 
-  // KELGAN VA KETGAN BITTA FAYLDA (BIRLASHGAN EXCEL/CSV HISOBOT)
+  // Birlashgan Excel / CSV hisobot (Kelgan va ketgan vaqtlari bitta qatorda)
   app.get('/api/export', (_req: Request, res: Response) => {
-    if (attendanceLogs.length === 0) {
+    const records: any[] = db.prepare('SELECT * FROM attendance ORDER BY server_timestamp ASC').all();
+
+    if (records.length === 0) {
       return res.status(404).json({ success: false, error: 'Yuklab olish uchun ma\'lumotlar mavjud emas!' });
     }
 
-    // Har bir xodim va sana bo'yicha Keldi va Ketdi ni bitta qatorga birlashtiramiz
     interface DailySummary {
       date: string;
       jshr: string;
@@ -386,10 +408,7 @@ async function startServer() {
 
     const groupedMap = new Map<string, DailySummary>();
 
-    // Eski yozuvlardan yangisiga qarab o'qiymiz
-    const chronologicalLogs = [...attendanceLogs].reverse();
-
-    for (const log of chronologicalLogs) {
+    for (const log of records) {
       const key = `${log.date_str}_${log.jshr}`;
       if (!groupedMap.has(key)) {
         groupedMap.set(key, {
@@ -406,11 +425,9 @@ async function startServer() {
 
       const entry = groupedMap.get(key)!;
       if (log.action_type === 'Keldi' && entry.keldi_vaqt === '-') {
-        // Birinchi kelgan vaqtini olamiz
         entry.keldi_vaqt = log.time_str;
         entry.keldi_holat = log.time_status;
       } else if (log.action_type === 'Ketdi') {
-        // Oxirgi ketgan vaqtini olamiz
         entry.ketdi_vaqt = log.time_str;
         entry.ketdi_holat = log.time_status;
       }
@@ -428,15 +445,18 @@ async function startServer() {
   });
 
   app.post('/api/attendance-clear', (_req: Request, res: Response) => {
-    attendanceLogs.length = 0;
-    res.json({ success: true, message: 'Server jurnali tozalandi.' });
+    db.exec('DELETE FROM attendance');
+    res.json({ success: true, message: 'Baza tozalandi.' });
   });
 
   app.get('/api/health', (_req: Request, res: Response) => {
+    const countRow: any = db.prepare('SELECT COUNT(*) as cnt FROM attendance').get();
     res.json({
       status: 'online',
       service: 'Yakkabog\' 2-son Texnikum Davomat API Server',
       teachers_loaded: TEACHERS_DATABASE.length,
+      total_saved_records: countRow.cnt,
+      database: 'SQLite (Persistent)',
       work_hours: '08:30 - 16:00 (Tashkent Time)',
       telegram_notifications: 'Active',
       timestamp: new Date().toISOString()
