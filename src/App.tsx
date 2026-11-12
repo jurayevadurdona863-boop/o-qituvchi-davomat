@@ -8,7 +8,6 @@ const COLLEGE_CONFIG = {
 
 const ADMIN_PASSWORD = "2294";
 
-// Yangi token qo'shildi
 const TELEGRAM_BOT_TOKEN = "9241880191:AAHfYqQSQC9KOpeAfFdomyft9nhIBm-h6sk";
 const TELEGRAM_CHAT_IDS = [
   "1179846016",
@@ -169,6 +168,7 @@ export default function App() {
   const [currentDistance, setCurrentDistance] = useState<number | null>(null);
   const [attendanceStatus, setAttendanceStatus] = useState<string>('Tayyor...');
   const [checkInTimeDisplay, setCheckInTimeDisplay] = useState<string>('--:--');
+  const [checkOutTimeDisplay, setCheckOutTimeDisplay] = useState<string>('--:--');
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
   
   const [currentTimeStr, setCurrentTimeStr] = useState<string>('');
@@ -195,12 +195,13 @@ export default function App() {
         const now = new Date();
         const dateKey = now.toISOString().split('T')[0];
         const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
-        const todayUserLog = existingLogs.find(l => l.pinfl === parsed.pinfl && l.dateKey === dateKey);
-        if (todayUserLog) {
-          if (todayUserLog.status.includes('Belgilandi')) {
-            setCheckInTimeDisplay(todayUserLog.timeOnly);
-          }
-        }
+        const todayUserLogs = existingLogs.filter(l => l.pinfl === parsed.pinfl && l.dateKey === dateKey);
+        
+        const checkIn = todayUserLogs.find(l => l.status.includes('Keldi') || l.status.includes('Belgilandi'));
+        const checkOut = todayUserLogs.find(l => l.status.includes('Ketdi'));
+
+        if (checkIn) setCheckInTimeDisplay(checkIn.timeOnly);
+        if (checkOut) setCheckOutTimeDisplay(checkOut.timeOnly);
       } catch (e) {
         console.error("Profilni o'qishda xatolik:", e);
       }
@@ -263,13 +264,13 @@ export default function App() {
         const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
         const todayUserLogs = existingLogs.filter(l => l.pinfl === profile.pinfl && l.dateKey === dateKey);
         
-        const hasCheckedInToday = todayUserLogs.some(l => l.status.includes('Belgilandi'));
+        const hasCheckedInToday = todayUserLogs.some(l => l.status.includes('Keldi') || l.status.includes('Belgilandi'));
 
         setAttendanceStatus(`✅ Joylashuv aniqlandi: ${dist} metr masofada`);
 
         if (!hasCheckedInToday) {
-          const statusText = `${timeOnly} – Belgilandi (${dist}m uzoqlikda)`;
-          const telegramMsg = `<b>🟢 XODIM DAVOMATI QAYD ETILDI</b>\n\n👤 <b>F.I.Sh:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}\n📍 <b>Masofa:</b> ${dist} metr`;
+          const statusText = `${timeOnly} – Keldi (${dist}m uzoqlikda)`;
+          const telegramMsg = `<b>🟢 XODIM KELDI</b>\n\n👤 <b>F.I.Sh:</b> ${profile.fullName}\n🆔 <b>JSHR:</b> <code>${profile.pinfl}</code>\n⏰ <b>Vaqt:</b> ${timeString}\n📍 <b>Masofa:</b> ${dist} metr`;
 
           setCheckInTimeDisplay(timeOnly);
           saveAttendanceRecord(profile, statusText, latitude, longitude, dateKey, timeOnly, dist);
@@ -468,7 +469,7 @@ export default function App() {
           <div className="flex justify-between items-end pt-2">
             <div>
               <div className="text-4xl font-black text-white tracking-tight font-mono">{currentTimeStr || '07:35'}</div>
-              <div className="text-xs text-slate-400 capitalize font-medium">{currentDateStr || 'Shanba, 7-noyabr'}</div>
+              <div className="text-xs text-slate-400 capitalize font-medium">{currentDateStr || 'Payshanba, 12-noyabr'}</div>
             </div>
             <div className="bg-slate-900 border border-slate-800 px-3.5 py-2 rounded-2xl text-right shadow-inner">
               <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider">Ish Vaqti</span>
@@ -490,6 +491,28 @@ export default function App() {
               {attendanceStatus}
             </div>
           </div>
+
+          {/* Qaytadan qo'shilgan Kirish va Chiqish vaqtlari bloki */}
+          <div className="grid grid-cols-2 gap-3 pt-1">
+            <div className="bg-slate-900/90 border border-slate-800 p-3 rounded-2xl shadow-inner flex items-center space-x-3">
+              <div className="w-9 h-9 rounded-xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-400 font-bold text-sm">
+                ➔
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400 block font-semibold">Kirish</span>
+                <span className="text-xs font-bold text-white font-mono">{checkInTimeDisplay}</span>
+              </div>
+            </div>
+            <div className="bg-slate-900/90 border border-slate-800 p-3 rounded-2xl shadow-inner flex items-center space-x-3">
+              <div className="w-9 h-9 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 font-bold text-sm">
+                ←
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400 block font-semibold">Chiqish</span>
+                <span className="text-xs font-bold text-white font-mono">{checkOutTimeDisplay}</span>
+              </div>
+            </div>
+          </div>
         </div>
       </header>
 
@@ -508,7 +531,7 @@ export default function App() {
             <h2 className="text-sm font-bold text-white">Sizning Holatingiz</h2>
             <p className="text-xs text-slate-400">Davomatingiz avtomatik qayd etildi va faqat rahbar (admin) tomonidan nazorat qilinadi.</p>
             <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 text-xs text-emerald-400 font-mono">
-              Vaqt: {checkInTimeDisplay} | Masofa: {currentDistance !== null ? `${currentDistance} m` : 'Aniqlanmoqda...'}
+              Kelish: {checkInTimeDisplay} | Masofa: {currentDistance !== null ? `${currentDistance} m` : 'Aniqlanmoqda...'}
             </div>
           </div>
         )}
@@ -654,7 +677,7 @@ export default function App() {
           className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'ai' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
         >
           <span className="text-sm">🤖</span>
-          <span className="text-[9px] font-bold">Davomati</span>
+          <span className="text-[9px] font-bold">AI</span>
         </button>
 
         <button
