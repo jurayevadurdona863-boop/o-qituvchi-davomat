@@ -3,8 +3,8 @@ import React, { useState, useEffect, useRef } from 'react';
 const COLLEGE_CONFIG = {
   latitude: 38.971199,
   longitude: 66.707470,
-  checkInRadiusMeters: 100, // Davomatdan o'tish uchun 100m geozona
-  alertBoundaryMeters: 400, // Ish vaqtida chiqib ketsa xabar berish (400m)
+  checkInRadiusMeters: 100, // 100 metr qat'iy saqlandi
+  alertBoundaryMeters: 400,
 };
 
 const ADMIN_PASSWORD = "2294";
@@ -27,6 +27,7 @@ interface UserProfile {
 interface AttendanceLog {
   pinfl: string;
   name: string;
+  lavozimi?: string;
   status: string;
   lat: number;
   lng: number;
@@ -165,7 +166,7 @@ export default function App() {
 
   const [pinflInput, setPinflInput] = useState('');
   const [nameInput, setNameInput] = useState('');
-  const [lavozimInput, setLavozimInput] = useState('O\'qituvchi');
+  const [lavozimInput, setLavozimInput] = useState("O'qituvchi");
   const [photoInput, setPhotoInput] = useState<string | null>(null);
 
   const [currentDistance, setCurrentDistance] = useState<number | null>(null);
@@ -279,35 +280,6 @@ export default function App() {
           COLLEGE_CONFIG.longitude
         );
         setCurrentDistance(dist);
-
-        const now = new Date();
-        const dateKey = now.toISOString().split('T')[0];
-        const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
-        const todayUserLogs = existingLogs.filter(l => l.pinfl === profile.pinfl && l.dateKey === dateKey);
-
-        const hasCheckedIn = todayUserLogs.some(l => l.status.includes('Keldi') || l.status.includes('Kechikdi'));
-        const hasCheckedOut = todayUserLogs.some(l => l.status.includes('Ketdi'));
-
-        const alertFlagKey = `boundary_alert_sent_${profile.pinfl}_${dateKey}`;
-        const alreadyAlerted = localStorage.getItem(alertFlagKey) === 'true';
-
-        if (hasCheckedIn && !hasCheckedOut && dist > COLLEGE_CONFIG.alertBoundaryMeters && !alreadyAlerted) {
-          localStorage.setItem(alertFlagKey, 'true');
-          const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-          const alertMsg = `<b>🚨 DIQQAT! HUDUDDAN CHIQIB KETDI (400m+)</b>\n\n👤 <b>F.I.O:</b> ${profile.fullName}\n💼 <b>Lavozimi:</b> ${profile.lavozimi}\n⏰ <b>Vaqt:</b> ${timeString}\n📍 <b>Masofa:</b> ${dist}m\n⚠️ <b>Holat:</b> 400 metr chegaradan chiqib ketdi!`;
-          
-          sendTelegramPhotoAlert(alertMsg, profile.photoUrl);
-          saveAttendanceRecord(
-            profile,
-            `${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} – Chegaradan chiqdi (${dist}m)`,
-            latitude,
-            longitude,
-            dateKey,
-            now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            dist,
-            profile.photoUrl
-          );
-        }
       },
       (error) => console.error('GPS Xato:', error),
       { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
@@ -325,6 +297,7 @@ export default function App() {
       alert("GPS joylashuvingiz aniqlanmoqda, kuting...");
       return;
     }
+    // 100 metr qat'iy tekshiruvi
     if (currentDistance > COLLEGE_CONFIG.checkInRadiusMeters) {
       alert(`❌ Texnikum hududidan tashqaridasiz (${currentDistance}m).\nDavomatdan o'tish uchun 100 metr ichida bo'lishingiz kerak!`);
       return;
@@ -412,7 +385,6 @@ export default function App() {
 
         const statusText = isLate ? `Kechikib keldi ⚠️` : `O'z vaqtida keldi ✅`;
 
-        // Rasmda ko'rsatganingizdek aniq format[span_2](start_span)[span_2](end_span)[span_3](start_span)[span_3](end_span)
         const telegramMsg = `🟢 <b>KIRISH (Kelish) - ${todayDateStr}</b>\n\n👤 <b>F.I.O:</b> ${profile.fullName}\n💼 <b>Lavozimi:</b> ${profile.lavozimi}\n⏰ <b>Vaqt:</b> ${timeString}\n⚠️ <b>Holat:</b> ${statusText}\n📍 <b>Masofa:</b> ${dist}m`;
 
         setCheckInTimeDisplay(timeOnly);
@@ -423,7 +395,7 @@ export default function App() {
 
         saveAttendanceRecord(profile, statusText, lat, lng, dateKey, timeOnly, dist, livePhotoBase64);
         sendTelegramPhotoAlert(telegramMsg, livePhotoBase64);
-        alert(isLate ? "⚠️ Kechikdingiz! Davomat rasm bilan yuborildi." : "✅ O'z vaqtida keldingiz! Davomat rasm bilan yuborildi.");
+        alert(isLate ? "⚠️ Kechikdingiz! Davomat rasm bilan botga yuborildi." : "✅ O'z vaqtida keldingiz! Davomat rasm bilan botga yuborildi.");
       } else if (pendingAction === 'ketdi') {
         const statusText = `Ishdan ketdi 🔴`;
         const telegramMsg = `🔴 <b>CHIQISH (Ketish) - ${todayDateStr}</b>\n\n👤 <b>F.I.O:</b> ${profile.fullName}\n💼 <b>Lavozimi:</b> ${profile.lavozimi}\n⏰ <b>Vaqt:</b> ${timeString}\n🔴 <b>Holat:</b> ${statusText}\n📍 <b>Masofa:</b> ${dist}m`;
@@ -431,7 +403,7 @@ export default function App() {
         setCheckOutTimeDisplay(timeOnly);
         saveAttendanceRecord(profile, statusText, lat, lng, dateKey, timeOnly, dist, livePhotoBase64);
         sendTelegramPhotoAlert(telegramMsg, livePhotoBase64);
-        alert("✅ Ketish vaqtingiz rasm bilan tasdiqlandi!");
+        alert("✅ Ketish vaqtingiz rasm bilan botga yuborildi!");
       }
 
       setPendingAction(null);
@@ -453,6 +425,7 @@ export default function App() {
     const record: AttendanceLog = {
       pinfl: user.pinfl,
       name: user.fullName,
+      lavozimi: user.lavozimi,
       status,
       lat,
       lng,
@@ -500,10 +473,13 @@ export default function App() {
 
     try {
       const users: UserProfile[] = JSON.parse(localStorage.getItem('registered_users_list') || '[]');
-      if (!users.some(u => u.pinfl === pinflInput)) {
+      const existingIndex = users.findIndex(u => u.pinfl === pinflInput);
+      if (existingIndex >= 0) {
+        users[existingIndex] = newProfile;
+      } else {
         users.push(newProfile);
-        localStorage.setItem('registered_users_list', JSON.stringify(users));
       }
+      localStorage.setItem('registered_users_list', JSON.stringify(users));
     } catch (err) {
       console.error(err);
     }
@@ -534,21 +510,26 @@ export default function App() {
 
   const handleExportCSV = () => {
     if (attendanceLogs.length === 0) {
-      alert("Yuklab olish uchun ma'lumotlar mavjud emas!");
+      alert("Yuklab olish uchun davomat ma'lumotlari mavjud emas!");
       return;
     }
     try {
-      const headers = "JSHR,F.I.O,Lavozimi,Holat,Sana va Vaqt,Masofa(m),GPS\n";
-      const rows = attendanceLogs.map(l => `"${l.pinfl}","${l.name}","${lavozimInput}","${l.status}","${l.timestamp}","${l.distanceMeters ?? 'Noma\'lum'}","${l.lat.toFixed(4)}, ${l.lng.toFixed(4)}"`).join("\n");
+      const headers = "JSHR;F.I.O;Lavozimi;Holat;Sana va Vaqt;Masofa(m);GPS\n";
+      const rows = attendanceLogs.map(l => 
+        `"${l.pinfl}","${l.name}","${l.lavozimi || 'Xodim'}","${l.status}","${l.timestamp}","${l.distanceMeters ?? 'Noma\'lum'}","${l.lat.toFixed(4)}, ${l.lng.toFixed(4)}"`
+      ).join("\n");
+
       const blob = new Blob(["\uFEFF" + headers + rows], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
-      link.setAttribute('href', url);
-      link.setAttribute('download', `Texnikum_Davomati_${new Date().toISOString().split('T')[0]}.csv`);
+      link.href = url;
+      link.download = `Texnikum_Davomati_${new Date().toISOString().split('T')[0]}.csv`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (err) {
+      console.error("Excel eksport xatosi:", err);
       alert("Faylni yuklab olishda xatolik yuz berdi.");
     }
   };
@@ -659,7 +640,7 @@ export default function App() {
           <div className="flex justify-between items-end pt-2">
             <div>
               <div className="text-4xl font-black text-white tracking-tight font-mono">{currentTimeStr || '08:00'}</div>
-              <div className="text-xs text-slate-400 capitalize font-medium">{currentDateStr || 'Payshanba, 12-noyabr'}</div>
+              <div className="text-xs text-slate-400 capitalize font-medium">{currentDateStr || 'Juma, 13-noyabr'}</div>
             </div>
             <div className="bg-slate-900 border border-slate-800 px-3.5 py-2 rounded-2xl text-right shadow-inner">
               <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider">
@@ -683,7 +664,7 @@ export default function App() {
             </div>
             <div className="text-[11px] text-slate-400 font-medium">
               {isWithinCheckInZone
-                ? '✅ Jonli rasm orqali belgi qo‘yishingiz mumkin'
+                ? '✅ Davomatdan o\'tishingiz mumkin'
                 : `⚠️ Davomatdan o'tish uchun 100m ichiga kiring (Chegara: 400m)`}
             </div>
           </div>
@@ -757,24 +738,12 @@ export default function App() {
                 <div className="text-[10px] text-slate-400 font-medium">Jami soat</div>
               </div>
             </div>
-
-            <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl shadow-md space-y-2">
-              <div className="flex justify-between items-center text-xs">
-                <span className="font-bold text-white">Ish qoldirish chegarasi</span>
-                <span className="font-mono text-teal-400 font-bold">0 / 18 soat</span>
-              </div>
-              <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-slate-800">
-                <div className="bg-teal-500 h-full w-0"></div>
-              </div>
-              <p className="text-[10px] text-slate-400 font-medium">Yana 18 soat ish qoldirilsa, profil bloklanadi.</p>
-            </div>
           </div>
         )}
 
         {activeTab === 'davomat' && (
           <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl shadow-xl space-y-3 text-center">
             <h2 className="text-sm font-bold text-white">Sizning Bugungi Holatingiz</h2>
-            <p className="text-xs text-slate-400">Davomat ma'lumotlaringiz jonli rasm bilan tasdiqlanib, admin botiga yuboriladi.</p>
             <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 text-xs text-emerald-400 font-mono space-y-1">
               <div>Kirish: {checkInTimeDisplay} | Chiqish: {checkOutTimeDisplay}</div>
               <div>Masofa: {currentDistance !== null ? `${currentDistance} m` : 'Aniqlanmoqda...'}</div>
@@ -785,14 +754,13 @@ export default function App() {
         {activeTab === 'ai' && (
           <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl shadow-xl space-y-3 text-center">
             <h2 className="text-sm font-bold text-teal-400">AI Nazorat Tizimi</h2>
-            <p className="text-xs text-slate-400">100m davomat zonasi va 400m hudud chegarasi avtomatik kuzatuvda.</p>
+            <p className="text-xs text-slate-400">100m geozona va 400m chegara nazoratda.</p>
           </div>
         )}
 
         {activeTab === 'fanlar' && (
           <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl shadow-xl space-y-3">
             <h2 className="text-sm font-bold text-white">Texnikum Fanlari va Bo'limlari</h2>
-            <p className="text-xs text-slate-400">O'qituvchilar va dars jadvallari.</p>
           </div>
         )}
 
@@ -854,16 +822,16 @@ export default function App() {
 
                 <div className="space-y-3">
                   <h3 className="text-xs font-bold text-teal-400 uppercase tracking-wider">Ilovaga Ulangan Xodimlar ({registeredUsers.length}):</h3>
-                  <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
+                  <div className="space-y-2 max-h-[140px] overflow-y-auto pr-1">
                     {registeredUsers.length === 0 ? (
-                      <p className="text-xs text-slate-500 text-center py-3">Hozircha ulangan xodimlar yo'q.</p>
+                      <p className="text-xs text-slate-500 text-center py-2">Ulangan xodimlar yo'q.</p>
                     ) : (
                       registeredUsers.map((u, i) => (
                         <div key={i} className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 text-xs flex items-center space-x-2.5">
                           {u.photoUrl && <img src={u.photoUrl} alt="" className="w-8 h-8 rounded-lg object-cover" />}
                           <div className="overflow-hidden">
                             <div className="font-bold text-white truncate">{u.fullName}</div>
-                            <div className="text-[10px] text-slate-400 font-mono">{u.lavozimi} | JSHR: {u.pinfl}</div>
+                            <div className="text-[10px] text-slate-400 font-mono">{u.lavozimi} | {u.pinfl}</div>
                           </div>
                         </div>
                       ))
@@ -872,22 +840,23 @@ export default function App() {
                 </div>
 
                 <div className="space-y-2 pt-2 border-t border-slate-800">
-                  <h3 className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Davomat Qayd Etganlar:</h3>
+                  <h3 className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Davomat Qayd Etganlar ({attendanceLogs.length}):</h3>
                   <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
                     {attendanceLogs.length === 0 ? (
-                      <p className="text-xs text-slate-500 text-center py-4">Yozuvlar mavjud emas.</p>
+                      <p className="text-xs text-slate-500 text-center py-4">Davomat yozuvlari mavjud emas.</p>
                     ) : (
                       attendanceLogs.map((log, index) => (
                         <div key={index} className="bg-slate-950 p-3 rounded-2xl border border-slate-800 text-xs flex items-center space-x-3">
                           {log.photoUrl && (
-                            <img src={log.photoUrl} alt={log.name} className="w-10 h-10 rounded-xl object-cover border border-rose-500/50 flex-shrink-0" />
+                            <img src={log.photoUrl} alt={log.name} className="w-10 h-10 rounded-xl object-cover border border-teal-500/50 flex-shrink-0" />
                           )}
                           <div className="flex-1 space-y-1 overflow-hidden">
                             <div className="flex justify-between font-bold text-white">
                               <span className="truncate">{log.name}</span>
                               <span className="text-teal-400 font-bold">📍 {log.distanceMeters ?? '?'}m</span>
                             </div>
-                            <div className={`text-[10px] font-bold ${log.status.includes('Kechikdi') || log.status.includes('chiqdi') ? 'text-rose-400' : 'text-emerald-400'}`}>
+                            <div className="text-[10px] text-slate-300 font-medium">💼 {log.lavozimi || 'Xodim'}</div>
+                            <div className={`text-[10px] font-bold ${log.status.includes('Kechikdi') ? 'text-rose-400' : 'text-emerald-400'}`}>
                               {log.status}
                             </div>
                             <div className="text-slate-400 font-mono text-[10px]">JSHR: {log.pinfl}</div>
@@ -914,7 +883,7 @@ export default function App() {
         </button>
 
         <button
-          onClick={() => setActiveTab('davomat') }
+          onClick={() => setActiveTab('davomat')}
           className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'davomat' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
         >
           <span className="text-sm">⏱️</span>
