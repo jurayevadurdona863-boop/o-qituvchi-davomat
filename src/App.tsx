@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 const COLLEGE_CONFIG = {
   latitude: 38.971199,
   longitude: 66.707470,
-  checkInRadiusMeters: 100, // 100 metr qat'iy saqlandi
+  checkInRadiusMeters: 100,
   alertBoundaryMeters: 400,
 };
 
@@ -197,6 +197,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    loadData();
     const savedProfile = localStorage.getItem('user_profile');
     if (savedProfile) {
       try {
@@ -207,7 +208,6 @@ export default function App() {
         console.error("Profilni o'qishda xatolik:", e);
       }
     }
-    loadData();
 
     const handleOnline = () => {
       setIsOnline(true);
@@ -297,7 +297,6 @@ export default function App() {
       alert("GPS joylashuvingiz aniqlanmoqda, kuting...");
       return;
     }
-    // 100 metr qat'iy tekshiruvi
     if (currentDistance > COLLEGE_CONFIG.checkInRadiusMeters) {
       alert(`❌ Texnikum hududidan tashqaridasiz (${currentDistance}m).\nDavomatdan o'tish uchun 100 metr ichida bo'lishingiz kerak!`);
       return;
@@ -496,6 +495,7 @@ export default function App() {
     if (passwordInput === ADMIN_PASSWORD) {
       setIsAuthenticatedAdmin(true);
       setPasswordInput('');
+      loadData(); // Admin panel ochilganda ma'lumotlarni yangilash
     } else {
       alert("Parol noto'g'ri!");
     }
@@ -561,7 +561,7 @@ export default function App() {
                 {isOnline ? 'ONLINE' : 'OFLAYN'}
               </span>
               <button 
-                onClick={() => setActiveTab('admin')} 
+                onClick={() => { setActiveTab('admin'); loadData(); }} 
                 className="text-xs bg-rose-600/20 text-rose-400 border border-rose-500/30 px-3 py-1.5 rounded-xl font-bold shadow hover:bg-rose-600 hover:text-white transition-all"
               >
                 🛡️ Admin
@@ -814,6 +814,7 @@ export default function App() {
                 <div className="flex justify-between items-center flex-wrap gap-2">
                   <h2 className="text-sm font-bold text-white">🛡️ Admin Boshqaruv Paneli</h2>
                   <div className="flex space-x-2">
+                    <button onClick={loadData} className="px-3 py-1.5 bg-indigo-600 text-xs text-white rounded-xl font-medium">Yangilash</button>
                     <button onClick={handleExportCSV} className="px-3 py-1.5 bg-teal-600 text-xs text-white rounded-xl font-medium">Excel</button>
                     <button onClick={handleClearLogs} className="px-3 py-1.5 bg-rose-600 text-xs text-white rounded-xl font-medium">Tozalash</button>
                     <button onClick={() => setIsAuthenticatedAdmin(false)} className="px-3 py-1.5 bg-slate-800 text-xs text-slate-300 rounded-xl">Chiqish</button>
@@ -895,7 +896,7 @@ export default function App() {
           className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'ai' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
         >
           <span className="text-sm">🤖</span>
-          <span className="text-[9px] font-bold">AI</span>
+          <span className="text-[9px] font-bold">Navbat</span>
         </button>
 
         <button
