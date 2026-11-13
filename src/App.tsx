@@ -229,7 +229,7 @@ export default function App() {
   const restoreTodayStatus = (pinfl: string) => {
     const now = new Date();
     const dateKey = now.toISOString().split('T')[0];
-    const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
+    const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || localStorage.getItem('attendance_logs') || '[]');
     const todayUserLogs = existingLogs.filter(l => l.pinfl === pinfl && l.dateKey === dateKey);
 
     const checkIn = todayUserLogs.find(l => l.status.includes('Keldi') || l.status.includes('Kechikdi'));
@@ -250,10 +250,10 @@ export default function App() {
 
   const loadData = () => {
     try {
-      const logs = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
+      const logs = JSON.parse(localStorage.getItem('persistent_attendance_logs') || localStorage.getItem('attendance_logs') || '[]');
       setAttendanceLogs([...logs].reverse());
 
-      const users = JSON.parse(localStorage.getItem('registered_users_list') || '[]');
+      const users = JSON.parse(localStorage.getItem('registered_users_list') || localStorage.getItem('registered_users') || '[]');
       setRegisteredUsers(users);
     } catch (e) {
       console.error("Ma'lumotlarni yuklashda xatolik:", e);
@@ -304,7 +304,7 @@ export default function App() {
 
     const now = new Date();
     const dateKey = now.toISOString().split('T')[0];
-    const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
+    const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || localStorage.getItem('attendance_logs') || '[]');
     const alreadyCheckedIn = existingLogs.some(
       l => l.pinfl === profile.pinfl && l.dateKey === dateKey && (l.status.includes('Keldi') || l.status.includes('Kechikdi'))
     );
@@ -347,7 +347,7 @@ export default function App() {
     }
 
     const dateKey = now.toISOString().split('T')[0];
-    const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
+    const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || localStorage.getItem('attendance_logs') || '[]');
     const alreadyCheckedOut = existingLogs.some(
       l => l.pinfl === profile.pinfl && l.dateKey === dateKey && l.status.includes('Ketdi')
     );
@@ -434,9 +434,15 @@ export default function App() {
       timeOnly,
       distanceMeters,
     };
-    const history = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
-    history.push(record);
-    localStorage.setItem('persistent_attendance_logs', JSON.stringify(history));
+    
+    const history1 = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
+    history1.push(record);
+    localStorage.setItem('persistent_attendance_logs', JSON.stringify(history1));
+
+    const history2 = JSON.parse(localStorage.getItem('attendance_logs') || '[]');
+    history2.push(record);
+    localStorage.setItem('attendance_logs', JSON.stringify(history2));
+
     loadData();
   };
 
@@ -471,7 +477,7 @@ export default function App() {
     setProfile(newProfile);
 
     try {
-      const users: UserProfile[] = JSON.parse(localStorage.getItem('registered_users_list') || '[]');
+      const users: UserProfile[] = JSON.parse(localStorage.getItem('registered_users_list') || localStorage.getItem('registered_users') || '[]');
       const existingIndex = users.findIndex(u => u.pinfl === pinflInput);
       if (existingIndex >= 0) {
         users[existingIndex] = newProfile;
@@ -479,6 +485,7 @@ export default function App() {
         users.push(newProfile);
       }
       localStorage.setItem('registered_users_list', JSON.stringify(users));
+      localStorage.setItem('registered_users', JSON.stringify(users));
     } catch (err) {
       console.error(err);
     }
@@ -495,7 +502,7 @@ export default function App() {
     if (passwordInput === ADMIN_PASSWORD) {
       setIsAuthenticatedAdmin(true);
       setPasswordInput('');
-      loadData(); // Admin panel ochilganda ma'lumotlarni yangilash
+      loadData();
     } else {
       alert("Parol noto'g'ri!");
     }
@@ -504,19 +511,21 @@ export default function App() {
   const handleClearLogs = () => {
     if (window.confirm("Barcha davomat tarixini o'chirmoqchimisiz?")) {
       localStorage.removeItem('persistent_attendance_logs');
+      localStorage.removeItem('attendance_logs');
       loadData();
     }
   };
 
   const handleExportCSV = () => {
-    if (attendanceLogs.length === 0) {
+    const logs = JSON.parse(localStorage.getItem('persistent_attendance_logs') || localStorage.getItem('attendance_logs') || '[]');
+    if (logs.length === 0) {
       alert("Yuklab olish uchun davomat ma'lumotlari mavjud emas!");
       return;
     }
     try {
       const headers = "JSHR;F.I.O;Lavozimi;Holat;Sana va Vaqt;Masofa(m);GPS\n";
-      const rows = attendanceLogs.map(l => 
-        `"${l.pinfl}","${l.name}","${l.lavozimi || 'Xodim'}","${l.status}","${l.timestamp}","${l.distanceMeters ?? 'Noma\'lum'}","${l.lat.toFixed(4)}, ${l.lng.toFixed(4)}"`
+      const rows = logs.map((l: AttendanceLog) => 
+        `"${l.pinfl}","${l.name}","${l.lavozimi || profile?.lavozimi || 'Xodim'}","${l.status}","${l.timestamp}","${l.distanceMeters ?? 'Noma\'lum'}","${l.lat.toFixed(4)}, ${l.lng.toFixed(4)}"`
       ).join("\n");
 
       const blob = new Blob(["\uFEFF" + headers + rows], { type: 'text/csv;charset=utf-8;' });
@@ -551,7 +560,7 @@ export default function App() {
         <div className="max-w-md mx-auto space-y-4">
           <div className="flex justify-between items-center">
             <button 
-              onClick={() => setActiveTab('asosiy')}
+              onClick={() => { setActiveTab('asosiy'); setIsAuthenticatedAdmin(false); }}
               className="text-xs bg-slate-800/80 hover:bg-slate-700 px-3 py-1.5 rounded-xl font-medium text-slate-300 transition-all shadow"
             >
               ← Orqaga
@@ -876,7 +885,7 @@ export default function App() {
 
       <nav className="fixed bottom-3 left-1/2 -translate-x-1/2 w-[92%] max-w-md bg-slate-900/95 backdrop-blur-xl border border-slate-800 px-3 py-2 rounded-3xl shadow-2xl z-50 flex justify-between items-center">
         <button
-          onClick={() => setActiveTab('asosiy')}
+          onClick={() => { setActiveTab('asosiy'); setIsAuthenticatedAdmin(false); }}
           className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'asosiy' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
         >
           <span className="text-sm">🏠</span>
@@ -884,7 +893,7 @@ export default function App() {
         </button>
 
         <button
-          onClick={() => setActiveTab('davomat')}
+          onClick={() => { setActiveTab('davomat'); setIsAuthenticatedAdmin(false); }}
           className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'davomat' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
         >
           <span className="text-sm">⏱️</span>
@@ -892,7 +901,7 @@ export default function App() {
         </button>
 
         <button
-          onClick={() => setActiveTab('ai')}
+          onClick={() => { setActiveTab('ai'); setIsAuthenticatedAdmin(false); }}
           className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'ai' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
         >
           <span className="text-sm">🤖</span>
@@ -900,7 +909,7 @@ export default function App() {
         </button>
 
         <button
-          onClick={() => setActiveTab('fanlar')}
+          onClick={() => { setActiveTab('fanlar'); setIsAuthenticatedAdmin(false); }}
           className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'fanlar' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
         >
           <span className="text-sm">📚</span>
@@ -908,7 +917,7 @@ export default function App() {
         </button>
 
         <button
-          onClick={() => setActiveTab('profil')}
+          onClick={() => { setActiveTab('profil'); setIsAuthenticatedAdmin(false); }}
           className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'profil' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
         >
           <span className="text-sm">👤</span>
