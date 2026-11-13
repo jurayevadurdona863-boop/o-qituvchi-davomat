@@ -260,6 +260,7 @@ export default function App() {
     }
   };
 
+  // GPS va 400m chegaradan chiqib ketishni kuzatish
   useEffect(() => {
     if (!profile) return;
 
@@ -280,9 +281,39 @@ export default function App() {
           COLLEGE_CONFIG.longitude
         );
         setCurrentDistance(dist);
+
+        const now = new Date();
+        const dateKey = now.toISOString().split('T')[0];
+        const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || localStorage.getItem('attendance_logs') || '[]');
+        const todayUserLogs = existingLogs.filter(l => l.pinfl === profile.pinfl && l.dateKey === dateKey);
+
+        const hasCheckedIn = todayUserLogs.some(l => l.status.includes('Keldi') || l.status.includes('Kechikdi'));
+        const hasCheckedOut = todayUserLogs.some(l => l.status.includes('Ketdi'));
+
+        const alertFlagKey = `boundary_alert_sent_${profile.pinfl}_${dateKey}`;
+        const alreadyAlerted = localStorage.getItem(alertFlagKey) === 'true';
+
+        // Agar "Keldim" bosilgan bo'lsa, "Ketdim" bosilmagan bo'lsa va masofa 400 metrdan oshsa
+        if (hasCheckedIn && !hasCheckedOut && dist > COLLEGE_CONFIG.alertBoundaryMeters && !alreadyAlerted) {
+          localStorage.setItem(alertFlagKey, 'true');
+          const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+          const alertMsg = `<b>🚨 DIQQAT! HUDUDDAN CHIQIB KETDI (400m+)</b>\n\n👤 <b>F.I.O:</b> ${profile.fullName}\n💼 <b>Lavozimi:</b> ${profile.lavozimi}\n⏰ <b>Vaqt:</b> ${timeString}\n📍 <b>Masofa:</b> ${dist}m\n⚠️ <b>Holat:</b> 400 metr chegaradan chiqib ketdi!`;
+          
+          sendTelegramPhotoAlert(alertMsg, profile.photoUrl);
+          saveAttendanceRecord(
+            profile,
+            `Chegaradan chiqdi (${dist}m) 🚨`,
+            latitude,
+            longitude,
+            dateKey,
+            now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            dist,
+            profile.photoUrl
+          );
+        }
       },
       (error) => console.error('GPS Xato:', error),
-      { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
+      { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 }
     );
 
     return () => navigator.geolocation.clearWatch(watchId);
@@ -866,7 +897,7 @@ export default function App() {
                               <span className="text-teal-400 font-bold">📍 {log.distanceMeters ?? '?'}m</span>
                             </div>
                             <div className="text-[10px] text-slate-300 font-medium">💼 {log.lavozimi || 'Xodim'}</div>
-                            <div className={`text-[10px] font-bold ${log.status.includes('Kechikdi') ? 'text-rose-400' : 'text-emerald-400'}`}>
+                            <div className={`text-[10px] font-bold ${log.status.includes('Kechikdi') || log.status.includes('chiqdi') ? 'text-rose-400' : 'text-emerald-400'}`}>
                               {log.status}
                             </div>
                             <div className="text-slate-400 font-mono text-[10px]">JSHR: {log.pinfl}</div>
