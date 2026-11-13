@@ -4,7 +4,7 @@ const COLLEGE_CONFIG = {
   latitude: 38.971199,
   longitude: 66.707470,
   checkInRadiusMeters: 100,
-  alertBoundaryMeters: 400,
+  alertBoundaryMeters: 600, // Chegara 600 metr qilindi
 };
 
 const ADMIN_PASSWORD = "2294";
@@ -38,12 +38,6 @@ interface AttendanceLog {
   distanceMeters?: number;
 }
 
-interface PendingTelegramMessage {
-  id: string;
-  text: string;
-  photoUrl?: string;
-}
-
 function getDistanceInMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
   const R = 6371e3;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -59,100 +53,32 @@ function getDistanceInMeters(lat1: number, lon1: number, lat2: number, lon2: num
 }
 
 async function sendTelegramPhotoAlert(text: string, photoBase64?: string) {
-  const isOnline = navigator.onLine;
+  for (const chatId of TELEGRAM_CHAT_IDS) {
+    try {
+      if (photoBase64 && photoBase64.startsWith('data:image')) {
+        const res = await fetch(photoBase64);
+        const blob = await res.blob();
+        const formData = new FormData();
+        formData.append('chat_id', chatId);
+        formData.append('photo', blob, 'xodim.jpg');
+        formData.append('caption', text);
+        formData.append('parse_mode', 'HTML');
 
-  if (isOnline) {
-    let success = false;
-    for (const chatId of TELEGRAM_CHAT_IDS) {
-      try {
-        if (photoBase64 && photoBase64.startsWith('data:image')) {
-          const res = await fetch(photoBase64);
-          const blob = await res.blob();
-          const formData = new FormData();
-          formData.append('chat_id', chatId);
-          formData.append('photo', blob, 'xodim.jpg');
-          formData.append('caption', text);
-          formData.append('parse_mode', 'HTML');
-
-          const tgRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`, {
-            method: 'POST',
-            body: formData,
-          });
-          if (tgRes.ok) success = true;
-        } else {
-          const tgRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
-          });
-          if (tgRes.ok) success = true;
-        }
-      } catch (err) {
-        console.error(`Telegram xatolik (${chatId}):`, err);
+        await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`, {
+          method: 'POST',
+          body: formData,
+        });
+      } else {
+        await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
+        });
       }
-    }
-    if (!success) {
-      savePendingMessage(text, photoBase64);
-    }
-  } else {
-    savePendingMessage(text, photoBase64);
-  }
-}
-
-function savePendingMessage(text: string, photoUrl?: string) {
-  try {
-    const pending: PendingTelegramMessage[] = JSON.parse(localStorage.getItem('pending_telegram_msgs') || '[]');
-    pending.push({ id: Date.now().toString(), text, photoUrl });
-    localStorage.setItem('pending_telegram_msgs', JSON.stringify(pending));
-  } catch (e) {
-    console.error("Xabarni saqlashda xatolik:", e);
-  }
-}
-
-async function flushPendingMessages() {
-  if (!navigator.onLine) return;
-  const pending: PendingTelegramMessage[] = JSON.parse(localStorage.getItem('pending_telegram_msgs') || '[]');
-  if (pending.length === 0) return;
-
-  const remaining: PendingTelegramMessage[] = [];
-
-  for (const item of pending) {
-    let sent = false;
-    for (const chatId of TELEGRAM_CHAT_IDS) {
-      try {
-        const fullText = `${item.text}\n\n<i>📡 (Internet tiklangach yuborildi)</i>`;
-        if (item.photoUrl && item.photoUrl.startsWith('data:image')) {
-          const res = await fetch(item.photoUrl);
-          const blob = await res.blob();
-          const formData = new FormData();
-          formData.append('chat_id', chatId);
-          formData.append('photo', blob, 'xodim.jpg');
-          formData.append('caption', fullText);
-          formData.append('parse_mode', 'HTML');
-
-          const tgRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`, {
-            method: 'POST',
-            body: formData,
-          });
-          if (tgRes.ok) sent = true;
-        } else {
-          const tgRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId, text: fullText, parse_mode: 'HTML' }),
-          });
-          if (tgRes.ok) sent = true;
-        }
-      } catch (err) {
-        console.error("Qayta yuborishda xato:", err);
-      }
-    }
-    if (!sent) {
-      remaining.push(item);
+    } catch (err) {
+      console.error(`Telegram xatolik (${chatId}):`, err);
     }
   }
-
-  localStorage.setItem('pending_telegram_msgs', JSON.stringify(remaining));
 }
 
 export default function App() {
@@ -209,16 +135,11 @@ export default function App() {
       }
     }
 
-    const handleOnline = () => {
-      setIsOnline(true);
-      flushPendingMessages();
-    };
+    const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
 
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
-
-    flushPendingMessages();
 
     return () => {
       window.removeEventListener('online', handleOnline);
@@ -250,17 +171,20 @@ export default function App() {
 
   const loadData = () => {
     try {
-      const logs = JSON.parse(localStorage.getItem('persistent_attendance_logs') || localStorage.getItem('attendance_logs') || '[]');
-      setAttendanceLogs([...logs].reverse());
+      const logs1 = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
+      const logs2 = JSON.parse(localStorage.getItem('attendance_logs') || '[]');
+      const combinedLogs = Array.from(new Set([...logs1, ...logs2].map(l => JSON.stringify(l)))).map(s => JSON.parse(s));
+      setAttendanceLogs(combinedLogs.reverse());
 
-      const users = JSON.parse(localStorage.getItem('registered_users_list') || localStorage.getItem('registered_users') || '[]');
-      setRegisteredUsers(users);
+      const users1 = JSON.parse(localStorage.getItem('registered_users_list') || '[]');
+      const users2 = JSON.parse(localStorage.getItem('registered_users') || '[]');
+      const combinedUsers = Array.from(new Set([...users1, ...users2].map(u => JSON.stringify(u)))).map(s => JSON.parse(s));
+      setRegisteredUsers(combinedUsers);
     } catch (e) {
       console.error("Ma'lumotlarni yuklashda xatolik:", e);
     }
   };
 
-  // GPS va 400m chegaradan chiqib ketishni kuzatish
   useEffect(() => {
     if (!profile) return;
 
@@ -293,11 +217,11 @@ export default function App() {
         const alertFlagKey = `boundary_alert_sent_${profile.pinfl}_${dateKey}`;
         const alreadyAlerted = localStorage.getItem(alertFlagKey) === 'true';
 
-        // Agar "Keldim" bosilgan bo'lsa, "Ketdim" bosilmagan bo'lsa va masofa 400 metrdan oshsa
+        // 600 metrdan oshganda ogohlantirish yuborish
         if (hasCheckedIn && !hasCheckedOut && dist > COLLEGE_CONFIG.alertBoundaryMeters && !alreadyAlerted) {
           localStorage.setItem(alertFlagKey, 'true');
           const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-          const alertMsg = `<b>🚨 DIQQAT! HUDUDDAN CHIQIB KETDI (400m+)</b>\n\n👤 <b>F.I.O:</b> ${profile.fullName}\n💼 <b>Lavozimi:</b> ${profile.lavozimi}\n⏰ <b>Vaqt:</b> ${timeString}\n📍 <b>Masofa:</b> ${dist}m\n⚠️ <b>Holat:</b> 400 metr chegaradan chiqib ketdi!`;
+          const alertMsg = `<b>🚨 DIQQAT! HUDUDDAN CHIQIB KETDI (600m+)</b>\n\n👤 <b>F.I.O:</b> ${profile.fullName}\n💼 <b>Lavozimi:</b> ${profile.lavozimi}\n⏰ <b>Vaqt:</b> ${timeString}\n📍 <b>Masofa:</b> ${dist}m\n⚠️ <b>Holat:</b> 600 metr chegaradan chiqib ketdi!`;
           
           sendTelegramPhotoAlert(alertMsg, profile.photoUrl);
           saveAttendanceRecord(
@@ -341,7 +265,7 @@ export default function App() {
     );
 
     if (alreadyCheckedIn) {
-      alert("Siz bugun allaqachon «Keldim» belgisini qo'ygansiz!");
+      alert("⛔ Siz bugun allaqachon «Keldim» belgisini qo'ygansiz! Qayta topshirish mumkin emas.");
       return;
     }
 
@@ -384,7 +308,7 @@ export default function App() {
     );
 
     if (alreadyCheckedOut) {
-      alert("Siz bugun allaqachon «Ketdim» belgisini qo'ygansiz!");
+      alert("⛔ Siz bugun allaqachon «Ketdim» belgisini qo'ygansiz! Qayta topshirish mumkin emas.");
       return;
     }
 
@@ -508,15 +432,20 @@ export default function App() {
     setProfile(newProfile);
 
     try {
-      const users: UserProfile[] = JSON.parse(localStorage.getItem('registered_users_list') || localStorage.getItem('registered_users') || '[]');
-      const existingIndex = users.findIndex(u => u.pinfl === pinflInput);
+      const users1: UserProfile[] = JSON.parse(localStorage.getItem('registered_users_list') || '[]');
+      const users2: UserProfile[] = JSON.parse(localStorage.getItem('registered_users') || '[]');
+      
+      const allUsers = [...users1, ...users2];
+      const existingIndex = allUsers.findIndex(u => u.pinfl === pinflInput);
+      
       if (existingIndex >= 0) {
-        users[existingIndex] = newProfile;
+        allUsers[existingIndex] = newProfile;
       } else {
-        users.push(newProfile);
+        allUsers.push(newProfile);
       }
-      localStorage.setItem('registered_users_list', JSON.stringify(users));
-      localStorage.setItem('registered_users', JSON.stringify(users));
+      
+      localStorage.setItem('registered_users_list', JSON.stringify(allUsers));
+      localStorage.setItem('registered_users', JSON.stringify(allUsers));
     } catch (err) {
       console.error(err);
     }
@@ -544,33 +473,6 @@ export default function App() {
       localStorage.removeItem('persistent_attendance_logs');
       localStorage.removeItem('attendance_logs');
       loadData();
-    }
-  };
-
-  const handleExportCSV = () => {
-    const logs = JSON.parse(localStorage.getItem('persistent_attendance_logs') || localStorage.getItem('attendance_logs') || '[]');
-    if (logs.length === 0) {
-      alert("Yuklab olish uchun davomat ma'lumotlari mavjud emas!");
-      return;
-    }
-    try {
-      const headers = "JSHR;F.I.O;Lavozimi;Holat;Sana va Vaqt;Masofa(m);GPS\n";
-      const rows = logs.map((l: AttendanceLog) => 
-        `"${l.pinfl}","${l.name}","${l.lavozimi || profile?.lavozimi || 'Xodim'}","${l.status}","${l.timestamp}","${l.distanceMeters ?? 'Noma\'lum'}","${l.lat.toFixed(4)}, ${l.lng.toFixed(4)}"`
-      ).join("\n");
-
-      const blob = new Blob(["\uFEFF" + headers + rows], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `Texnikum_Davomati_${new Date().toISOString().split('T')[0]}.csv`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (err) {
-      console.error("Excel eksport xatosi:", err);
-      alert("Faylni yuklab olishda xatolik yuz berdi.");
     }
   };
 
@@ -705,7 +607,7 @@ export default function App() {
             <div className="text-[11px] text-slate-400 font-medium">
               {isWithinCheckInZone
                 ? '✅ Davomatdan o\'tishingiz mumkin'
-                : `⚠️ Davomatdan o'tish uchun 100m ichiga kiring (Chegara: 400m)`}
+                : `⚠️ Davomatdan o'tish uchun 100m ichiga kiring (Chegara: 600m)`}
             </div>
           </div>
 
@@ -794,7 +696,7 @@ export default function App() {
         {activeTab === 'ai' && (
           <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl shadow-xl space-y-3 text-center">
             <h2 className="text-sm font-bold text-teal-400">AI Nazorat Tizimi</h2>
-            <p className="text-xs text-slate-400">100m geozona va 400m chegara nazoratda.</p>
+            <p className="text-xs text-slate-400">100m geozona va 600m chegara nazoratda.</p>
           </div>
         )}
 
@@ -855,7 +757,6 @@ export default function App() {
                   <h2 className="text-sm font-bold text-white">🛡️ Admin Boshqaruv Paneli</h2>
                   <div className="flex space-x-2">
                     <button onClick={loadData} className="px-3 py-1.5 bg-indigo-600 text-xs text-white rounded-xl font-medium">Yangilash</button>
-                    <button onClick={handleExportCSV} className="px-3 py-1.5 bg-teal-600 text-xs text-white rounded-xl font-medium">Excel</button>
                     <button onClick={handleClearLogs} className="px-3 py-1.5 bg-rose-600 text-xs text-white rounded-xl font-medium">Tozalash</button>
                     <button onClick={() => setIsAuthenticatedAdmin(false)} className="px-3 py-1.5 bg-slate-800 text-xs text-slate-300 rounded-xl">Chiqish</button>
                   </div>
