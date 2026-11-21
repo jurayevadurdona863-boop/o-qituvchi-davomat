@@ -5,11 +5,14 @@ workflows:
     instance_type: mac_mini_m1
     environment:
       java: 21
+      groups:
+        - telegram_secrets
     scripts:
       - name: Install dependencies
         script: |
           npm install --legacy-peer-deps
-          npm install -D @capacitor/cli @capacitor/core @capacitor/android @capacitor/geolocation --legacy-peer-deps
+          npm install -D @capacitor/cli @capacitor/core @capacitor/android --legacy-peer-deps
+          npm install @capacitor/geolocation @capacitor/camera --legacy-peer-deps
       - name: Build web project
         script: |
           npm run build
@@ -18,17 +21,28 @@ workflows:
           rm -rf android
           npx cap add android
           npx cap sync android
-          python3 -c '
+          python3 - <<'PY'
           path = "android/app/src/main/AndroidManifest.xml"
           with open(path, "r") as f:
               content = f.read()
-          perms = """    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-              <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-              <uses-feature android:name="android.hardware.location.gps" />"""
-          content = content.replace("<application", perms + "\n    <application", 1)
+          perms = [
+              '<uses-permission android:name="android.permission.INTERNET" />',
+              '<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />',
+              '<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />',
+              '<uses-permission android:name="android.permission.CAMERA" />',
+              '<uses-feature android:name="android.hardware.location.gps" />',
+              '<uses-feature android:name="android.hardware.camera" android:required="false" />',
+          ]
+          block = ""
+          for p in perms:
+              key = p.split('android:name="')[1].split('"')[0]
+              if key not in content:
+                  block += "    " + p + "\n"
+          content = content.replace("<application", block + "    <application", 1)
           with open(path, "w") as f:
               f.write(content)
-          '
+          print(content)
+          PY
       - name: Build Android APK
         script: |
           cd android
