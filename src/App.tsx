@@ -1,21 +1,24 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Geolocation } from '@capacitor/geolocation';
+import { Camera, CameraDirection, CameraResultType, CameraSource } from '@capacitor/camera';
 
-const COLLEGE_CONFIG = {
+// ====== SOZLAMALAR (maxfiy qiymatlar Codemagic environment variables orqali beriladi) ======
+const env = ((import.meta as any).env || {}) as Record<string, string>;
+const BOT_TOKEN = env.VITE_TELEGRAM_BOT_TOKEN || '';
+const CHAT_IDS: string[] = (env.VITE_TELEGRAM_CHAT_IDS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+const ADMIN_PASSWORD = env.VITE_ADMIN_PASSWORD || '';
+
+const CONFIG = {
   latitude: 38.971199,
-  longitude: 66.707470,
+  longitude: 66.70747,
   checkInRadiusMeters: 100,
-  alertBoundaryMeters: 600, // Chegara 600 metr qilindi
+  alertBoundaryMeters: 600,
 };
 
-const ADMIN_PASSWORD = "2294";
-
-const TELEGRAM_BOT_TOKEN = "9241880191:AAHfYqQSQC9KOpeAfFdomyft9nhIBm-h6sk";
-const TELEGRAM_CHAT_IDS = [
-  "1179846016",
-  "727029645",
-  "1838498079",
-  "1611805500"
-];
+type ActionType = 'keldi' | 'ketdi' | 'chiqdi';
 
 interface UserProfile {
   pinfl: string;
@@ -27,15 +30,42 @@ interface UserProfile {
 interface AttendanceLog {
   pinfl: string;
   name: string;
-  lavozimi?: string;
-  status: string;
+  lavozimi: string;
+  type: ActionType;
+  late: boolean;
+  dateKey: string;
+  timeOnly: string;
+  distanceMeters: number;
   lat: number;
   lng: number;
-  timestamp: string;
-  dateKey: string;
-  photoUrl?: string;
-  timeOnly: string;
-  distanceMeters?: number;
+}
+
+interface QueueItem {
+  text: string;
+  photo?: string;
+}
+
+// ====== YORDAMCHI FUNKSIYALAR ======
+const pad = (n: number) => String(n).padStart(2, '0');
+const localDateKey = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const hhmm = (d = new Date()) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+const hhmmss = (d = new Date()) => `${hhmm(d)}:${pad(d.getSeconds())}`;
+const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+function readJSON<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function writeJSON(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    console.error('Saqlashda xato:', key, e);
+  }
 }
 
 function getDistanceInMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
@@ -43,819 +73,698 @@ function getDistanceInMeters(lat1: number, lon1: number, lat2: number, lon2: num
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLon = ((lon2 - lon1) * Math.PI) / 180;
   const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return Math.round(R * c);
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
+  return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 }
 
-async function sendTelegramPhotoAlert(text: string, photoBase64?: string) {
-  for (const chatId of TELEGRAM_CHAT_IDS) {
-    try {
-      if (photoBase64 && photoBase64.startsWith('data:image')) {
-        const res = await fetch(photoBase64);
-        const blob = await res.blob();
-        const formData = new FormData();
-        formData.append('chat_id', chatId);
-        formData.append('photo', blob, 'xodim.jpg');
-        formData.append('caption', text);
-        formData.append('parse_mode', 'HTML');
+function dataUrlToBlob(dataUrl: string): Blob {
+  const [head, body] = dataUrl.split(',');
+  const mime = /data:(.*?);base64/.exec(head)?.[1] || 'image/jpeg';
+  const bin = atob(body);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], { type: mime });
+}
 
-        await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`, {
-          method: 'POST',
-          body: formData,
-        });
-      } else {
-        await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
-        });
-      }
-    } catch (err) {
-      console.error(`Telegram xatolik (${chatId}):`, err);
+// ====== TELEGRAM ======
+async function tgSend(chatId: string, text: string, photo?: string) {
+  const base = `https://api.telegram.org/bot${BOT_TOKEN}/`;
+  let res: Response;
+  if (photo && photo.startsWith('data:image')) {
+    const fd = new FormData();
+    fd.append('chat_id', chatId);
+    fd.append('photo', dataUrlToBlob(photo), 'xodim.jpg');
+    fd.append('caption', text);
+    fd.append('parse_mode', 'HTML');
+    res = await fetch(base + 'sendPhoto', { method: 'POST', body: fd });
+  } else {
+    res = await fetch(base + 'sendMessage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
+    });
+  }
+  const j = await res.json();
+  if (!j.ok) throw new Error(j.description || 'Telegram xatosi');
+}
+
+async function tgSendDocument(chatId: string, filename: string, content: string, caption: string) {
+  const fd = new FormData();
+  fd.append('chat_id', chatId);
+  fd.append('document', new Blob(['\uFEFF' + content], { type: 'text/csv' }), filename);
+  fd.append('caption', caption);
+  const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, { method: 'POST', body: fd });
+  const j = await res.json();
+  if (!j.ok) throw new Error(j.description || 'Telegram xatosi');
+}
+
+async function sendToAdmins(text: string, photo?: string) {
+  const failed: string[] = [];
+  let sent = 0;
+  if (!BOT_TOKEN || CHAT_IDS.length === 0) {
+    return { sent: 0, failed: ['Bot tokeni yoki chat ID sozlanmagan'] };
+  }
+  for (const id of CHAT_IDS) {
+    try {
+      await tgSend(id, text, photo);
+      sent++;
+    } catch (e: any) {
+      failed.push(`${id}: ${e?.message || e}`);
     }
+  }
+  return { sent, failed };
+}
+
+function enqueue(item: QueueItem) {
+  const q = readJSON<QueueItem[]>('tg_queue', []);
+  q.push(item);
+  try {
+    localStorage.setItem('tg_queue', JSON.stringify(q));
+  } catch {
+    q[q.length - 1] = { text: item.text };
+    writeJSON('tg_queue', q);
+  }
+}
+let flushing = false;
+async function flushQueue() {
+  if (flushing) return;
+  flushing = true;
+  try {
+    const q = readJSON<QueueItem[]>('tg_queue', []);
+    const rest: QueueItem[] = [];
+    for (const item of q) {
+      const r = await sendToAdmins(item.text, item.photo);
+      if (r.sent === 0) rest.push(item);
+    }
+    writeJSON('tg_queue', rest);
+  } finally {
+    flushing = false;
   }
 }
 
+// ====== DAVOMAT MA'LUMOTLARI ======
+const LOGS_KEY = 'attendance_logs_v2';
+const USERS_KEY = 'registered_users_v2';
+const loadLogs = () => readJSON<AttendanceLog[]>(LOGS_KEY, []);
+
+interface DayRow {
+  pinfl: string;
+  name: string;
+  lavozimi: string;
+  dateKey: string;
+  keldi?: string;
+  ketdi?: string;
+  late: boolean;
+  chiqdi?: string;
+}
+
+function buildRows(logs: AttendanceLog[]): DayRow[] {
+  const map = new Map<string, DayRow>();
+  for (const l of logs) {
+    const key = `${l.pinfl}|${l.dateKey}`;
+    const row =
+      map.get(key) ||
+      ({ pinfl: l.pinfl, name: l.name, lavozimi: l.lavozimi, dateKey: l.dateKey, late: false } as DayRow);
+    if (l.type === 'keldi') {
+      row.keldi = l.timeOnly;
+      row.late = l.late;
+    } else if (l.type === 'ketdi') row.ketdi = l.timeOnly;
+    else if (l.type === 'chiqdi') row.chiqdi = l.timeOnly;
+    map.set(key, row);
+  }
+  return Array.from(map.values()).sort((a, b) =>
+    a.dateKey === b.dateKey ? a.name.localeCompare(b.name) : b.dateKey.localeCompare(a.dateKey)
+  );
+}
+
+function rowsToCsv(rows: DayRow[]) {
+  const q = (s: string) => `"${s.replace(/"/g, '""')}"`;
+  const lines = ['F.I.O,Lavozimi,JSHR,Sana,Keldi,Ketdi,Holat,Hududdan chiqqan vaqt'];
+  for (const r of rows) {
+    lines.push(
+      [
+        q(r.name),
+        q(r.lavozimi),
+        q(r.pinfl),
+        r.dateKey,
+        r.keldi || '',
+        r.ketdi || '',
+        r.keldi ? (r.late ? 'Kechikdi' : "O'z vaqtida") : '',
+        r.chiqdi || '',
+      ].join(',')
+    );
+  }
+  return lines.join('\n');
+}
+
+// ====== ILOVA ======
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'asosiy' | 'davomat' | 'ai' | 'fanlar' | 'profil' | 'admin'>('asosiy');
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [passwordInput, setPasswordInput] = useState<string>('');
-  const [isAuthenticatedAdmin, setIsAuthenticatedAdmin] = useState<boolean>(false);
-  
-  const [attendanceLogs, setAttendanceLogs] = useState<AttendanceLog[]>([]);
-  const [registeredUsers, setRegisteredUsers] = useState<UserProfile[]>([]);
+  const [tab, setTab] = useState<'asosiy' | 'profil' | 'admin'>('asosiy');
+  const [profile, setProfile] = useState<UserProfile | null>(() => readJSON<UserProfile | null>('user_profile', null));
+  const [logs, setLogs] = useState<AttendanceLog[]>(loadLogs());
+  const [users, setUsers] = useState<UserProfile[]>(readJSON<UserProfile[]>(USERS_KEY, []));
 
   const [pinflInput, setPinflInput] = useState('');
   const [nameInput, setNameInput] = useState('');
   const [lavozimInput, setLavozimInput] = useState("O'qituvchi");
   const [photoInput, setPhotoInput] = useState<string | null>(null);
 
-  const [currentDistance, setCurrentDistance] = useState<number | null>(null);
-  const [currentCoords, setCurrentCoords] = useState<{ lat: number; lng: number } | null>(null);
-  const [checkInTimeDisplay, setCheckInTimeDisplay] = useState<string>('--:--');
-  const [checkOutTimeDisplay, setCheckOutTimeDisplay] = useState<string>('--:--');
-  const [arrivalBadge, setArrivalBadge] = useState<{ text: string; isLate: boolean } | null>(null);
-  const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
-  
-  const [currentTimeStr, setCurrentTimeStr] = useState<string>('');
-  const [currentDateStr, setCurrentDateStr] = useState<string>('');
-  const [isSaturday, setIsSaturday] = useState<boolean>(false);
+  const [distance, setDistance] = useState<number | null>(null);
+  const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [gpsError, setGpsError] = useState<string>('');
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [busy, setBusy] = useState(false);
+  const [clock, setClock] = useState(new Date());
 
-  const [pendingAction, setPendingAction] = useState<'keldi' | 'ketdi' | null>(null);
-  const liveCameraInputRef = useRef<HTMLInputElement | null>(null);
+  const [adminOk, setAdminOk] = useState(false);
+  const [pass, setPass] = useState('');
+  const [filterDate, setFilterDate] = useState<string>(localDateKey());
+  const [showAll, setShowAll] = useState(false);
 
-  useEffect(() => {
-    const updateClock = () => {
-      const now = new Date();
-      setCurrentTimeStr(now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-      const options: Intl.DateTimeFormatOptions = { weekday: 'long', day: 'numeric', month: 'long' };
-      setCurrentDateStr(now.toLocaleDateString('uz-UZ', options));
-      setIsSaturday(now.getDay() === 6);
-    };
-    updateClock();
-    const timer = setInterval(updateClock, 1000);
-    return () => clearInterval(timer);
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
+
+  const refresh = useCallback(() => {
+    setLogs(loadLogs());
+    setUsers(readJSON<UserProfile[]>(USERS_KEY, []));
   }, []);
 
   useEffect(() => {
-    loadData();
-    const savedProfile = localStorage.getItem('user_profile');
-    if (savedProfile) {
-      try {
-        const parsed = JSON.parse(savedProfile);
-        setProfile(parsed);
-        restoreTodayStatus(parsed.pinfl);
-      } catch (e) {
-        console.error("Profilni o'qishda xatolik:", e);
-      }
-    }
+    const t = setInterval(() => setClock(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
 
-    const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
-
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-
+  useEffect(() => {
+    const on = () => {
+      setIsOnline(true);
+      flushQueue();
+    };
+    const off = () => setIsOnline(false);
+    window.addEventListener('online', on);
+    window.addEventListener('offline', off);
+    flushQueue();
+    const t = setInterval(flushQueue, 30000);
     return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('online', on);
+      window.removeEventListener('offline', off);
+      clearInterval(t);
     };
   }, []);
 
-  const restoreTodayStatus = (pinfl: string) => {
-    const now = new Date();
-    const dateKey = now.toISOString().split('T')[0];
-    const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || localStorage.getItem('attendance_logs') || '[]');
-    const todayUserLogs = existingLogs.filter(l => l.pinfl === pinfl && l.dateKey === dateKey);
-
-    const checkIn = todayUserLogs.find(l => l.status.includes('Keldi') || l.status.includes('Kechikdi'));
-    const checkOut = todayUserLogs.find(l => l.status.includes('Ketdi'));
-
-    if (checkIn) {
-      setCheckInTimeDisplay(checkIn.timeOnly);
-      const isLate = checkIn.status.includes('Kechikdi');
-      setArrivalBadge({
-        text: isLate ? "⚠️ Kechikdingiz (08:30 dan keyin)" : "✅ O'z vaqtida keldingiz",
-        isLate,
-      });
-    }
-    if (checkOut) {
-      setCheckOutTimeDisplay(checkOut.timeOnly);
-    }
-  };
-
-  const loadData = () => {
-    try {
-      const logs1 = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
-      const logs2 = JSON.parse(localStorage.getItem('attendance_logs') || '[]');
-      const combinedLogs = Array.from(new Set([...logs1, ...logs2].map(l => JSON.stringify(l)))).map(s => JSON.parse(s));
-      setAttendanceLogs(combinedLogs.reverse());
-
-      const users1 = JSON.parse(localStorage.getItem('registered_users_list') || '[]');
-      const users2 = JSON.parse(localStorage.getItem('registered_users') || '[]');
-      const combinedUsers = Array.from(new Set([...users1, ...users2].map(u => JSON.stringify(u)))).map(s => JSON.parse(s));
-      setRegisteredUsers(combinedUsers);
-    } catch (e) {
-      console.error("Ma'lumotlarni yuklashda xatolik:", e);
-    }
-  };
-
+  // ====== GPS ======
   useEffect(() => {
     if (!profile) return;
+    let watchId: string | undefined;
+    let cancelled = false;
 
-    if (!navigator.geolocation) {
-      alert("GPS qo'llab-quvvatlanmaydi!");
-      return;
-    }
+    const onPosition = (lat: number, lng: number) => {
+      setGpsError('');
+      setCoords({ lat, lng });
+      const dist = getDistanceInMeters(lat, lng, CONFIG.latitude, CONFIG.longitude);
+      setDistance(dist);
 
-    const watchId = navigator.geolocation.watchPosition(
-      (position) => {
-        const { latitude, longitude } = position.coords;
-        setCurrentCoords({ lat: latitude, lng: longitude });
+      const p = profileRef.current;
+      if (!p) return;
+      const now = new Date();
+      const dateKey = localDateKey(now);
+      const today = loadLogs().filter((l) => l.pinfl === p.pinfl && l.dateKey === dateKey);
+      const hasIn = today.some((l) => l.type === 'keldi');
+      const hasOut = today.some((l) => l.type === 'ketdi');
+      const flagKey = `boundary_alert_${p.pinfl}_${dateKey}`;
 
-        const dist = getDistanceInMeters(
-          latitude,
-          longitude,
-          COLLEGE_CONFIG.latitude,
-          COLLEGE_CONFIG.longitude
-        );
-        setCurrentDistance(dist);
+      if (hasIn && !hasOut && dist > CONFIG.alertBoundaryMeters && localStorage.getItem(flagKey) !== 'true') {
+        localStorage.setItem(flagKey, 'true');
+        saveLog(p, 'chiqdi', false, lat, lng, dist);
+        const msg =
+          `<b>🚨 DIQQAT! HUDUDDAN CHIQIB KETDI (${CONFIG.alertBoundaryMeters}m+)</b>\n\n` +
+          `👤 <b>F.I.O:</b> ${esc(p.fullName)}\n💼 <b>Lavozimi:</b> ${esc(p.lavozimi)}\n` +
+          `⏰ <b>Vaqt:</b> ${hhmmss(now)}\n📍 <b>Masofa:</b> ${dist}m`;
+        deliver(msg, p.photoUrl);
+      }
+    };
 
-        const now = new Date();
-        const dateKey = now.toISOString().split('T')[0];
-        const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || localStorage.getItem('attendance_logs') || '[]');
-        const todayUserLogs = existingLogs.filter(l => l.pinfl === profile.pinfl && l.dateKey === dateKey);
-
-        const hasCheckedIn = todayUserLogs.some(l => l.status.includes('Keldi') || l.status.includes('Kechikdi'));
-        const hasCheckedOut = todayUserLogs.some(l => l.status.includes('Ketdi'));
-
-        const alertFlagKey = `boundary_alert_sent_${profile.pinfl}_${dateKey}`;
-        const alreadyAlerted = localStorage.getItem(alertFlagKey) === 'true';
-
-        // 600 metrdan oshganda ogohlantirish yuborish
-        if (hasCheckedIn && !hasCheckedOut && dist > COLLEGE_CONFIG.alertBoundaryMeters && !alreadyAlerted) {
-          localStorage.setItem(alertFlagKey, 'true');
-          const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-          const alertMsg = `<b>🚨 DIQQAT! HUDUDDAN CHIQIB KETDI (600m+)</b>\n\n👤 <b>F.I.O:</b> ${profile.fullName}\n💼 <b>Lavozimi:</b> ${profile.lavozimi}\n⏰ <b>Vaqt:</b> ${timeString}\n📍 <b>Masofa:</b> ${dist}m\n⚠️ <b>Holat:</b> 600 metr chegaradan chiqib ketdi!`;
-          
-          sendTelegramPhotoAlert(alertMsg, profile.photoUrl);
-          saveAttendanceRecord(
-            profile,
-            `Chegaradan chiqdi (${dist}m) 🚨`,
-            latitude,
-            longitude,
-            dateKey,
-            now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            dist,
-            profile.photoUrl
-          );
+    (async () => {
+      try {
+        const perm = await Geolocation.requestPermissions();
+        if (perm.location !== 'granted' && perm.coarseLocation !== 'granted') {
+          setGpsError("Joylashuv ruxsati berilmagan. Sozlamalar → Ilovalar → Ruxsatlar → Joylashuv.");
+          return;
         }
-      },
-      (error) => console.error('GPS Xato:', error),
-      { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 }
-    );
+        const id = await Geolocation.watchPosition(
+          { enableHighAccuracy: true, timeout: 15000, maximumAge: 3000 },
+          (pos, err) => {
+            if (err || !pos) {
+              setGpsError('GPS xatosi: ' + (err?.message || 'joylashuv olinmadi'));
+              return;
+            }
+            onPosition(pos.coords.latitude, pos.coords.longitude);
+          }
+        );
+        if (cancelled) Geolocation.clearWatch({ id });
+        else watchId = id;
+      } catch (e: any) {
+        setGpsError("GPS yoqilmagan yoki ruxsat yo'q: " + (e?.message || e));
+      }
+    })();
 
-    return () => navigator.geolocation.clearWatch(watchId);
+    return () => {
+      cancelled = true;
+      if (watchId) Geolocation.clearWatch({ id: watchId });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile]);
 
-  const handleKeldimClick = () => {
-    if (!profile) {
-      alert("Avval profil ma'lumotlaringizni kiriting!");
-      return;
-    }
-    if (currentDistance === null) {
-      alert("GPS joylashuvingiz aniqlanmoqda, kuting...");
-      return;
-    }
-    if (currentDistance > COLLEGE_CONFIG.checkInRadiusMeters) {
-      alert(`❌ Texnikum hududidan tashqaridasiz (${currentDistance}m).\nDavomatdan o'tish uchun 100 metr ichida bo'lishingiz kerak!`);
-      return;
-    }
-
-    const now = new Date();
-    const dateKey = now.toISOString().split('T')[0];
-    const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || localStorage.getItem('attendance_logs') || '[]');
-    const alreadyCheckedIn = existingLogs.some(
-      l => l.pinfl === profile.pinfl && l.dateKey === dateKey && (l.status.includes('Keldi') || l.status.includes('Kechikdi'))
-    );
-
-    if (alreadyCheckedIn) {
-      alert("⛔ Siz bugun allaqachon «Keldim» belgisini qo'ygansiz! Qayta topshirish mumkin emas.");
-      return;
-    }
-
-    setPendingAction('keldi');
-    liveCameraInputRef.current?.click();
-  };
-
-  const handleKetdimClick = () => {
-    if (!profile) {
-      alert("Avval profil ma'lumotlaringizni kiriting!");
-      return;
-    }
-    if (currentDistance === null) {
-      alert("GPS joylashuvingiz aniqlanmoqda, kuting...");
-      return;
-    }
-
-    const now = new Date();
-    const hours = now.getHours();
-    const minutes = now.getMinutes();
-    const totalMinutes = hours * 60 + minutes;
-    const isSat = now.getDay() === 6;
-    const endWorkMinutes = isSat ? 13 * 60 : 16 * 60;
-    const limitLabel = isSat ? "13:00" : "16:00";
-
-    if (totalMinutes < endWorkMinutes) {
-      alert(`⛔ Hali ish vaqti tugamadi!\n\nKetishga faqat soat ${limitLabel} dan keyin ruxsat beriladi.`);
-      return;
-    }
-
-    if (currentDistance > COLLEGE_CONFIG.checkInRadiusMeters) {
-      alert(`❌ Ketish belgisini qo'yish uchun texnikum hududida (100m ichida) bo'lishingiz kerak!`);
-      return;
-    }
-
-    const dateKey = now.toISOString().split('T')[0];
-    const existingLogs: AttendanceLog[] = JSON.parse(localStorage.getItem('persistent_attendance_logs') || localStorage.getItem('attendance_logs') || '[]');
-    const alreadyCheckedOut = existingLogs.some(
-      l => l.pinfl === profile.pinfl && l.dateKey === dateKey && l.status.includes('Ketdi')
-    );
-
-    if (alreadyCheckedOut) {
-      alert("⛔ Siz bugun allaqachon «Ketdim» belgisini qo'ygansiz! Qayta topshirish mumkin emas.");
-      return;
-    }
-
-    setPendingAction('ketdi');
-    liveCameraInputRef.current?.click();
-  };
-
-  const handleLivePhotoCaptured = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !profile || !pendingAction) return;
-
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const livePhotoBase64 = reader.result as string;
-      const now = new Date();
-      const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      const timeOnly = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const dateKey = now.toISOString().split('T')[0];
-      const lat = currentCoords?.lat ?? COLLEGE_CONFIG.latitude;
-      const lng = currentCoords?.lng ?? COLLEGE_CONFIG.longitude;
-      const dist = currentDistance ?? 0;
-      const todayDateStr = now.toISOString().split('T')[0];
-
-      if (pendingAction === 'keldi') {
-        const totalMinutes = now.getHours() * 60 + now.getMinutes();
-        const limitMinutes = 8 * 60 + 30; // 08:30
-        const isLate = totalMinutes > limitMinutes;
-
-        const statusText = isLate ? `Kechikib keldi ⚠️` : `O'z vaqtida keldi ✅`;
-
-        const telegramMsg = `🟢 <b>KIRISH (Kelish) - ${todayDateStr}</b>\n\n👤 <b>F.I.O:</b> ${profile.fullName}\n💼 <b>Lavozimi:</b> ${profile.lavozimi}\n⏰ <b>Vaqt:</b> ${timeString}\n⚠️ <b>Holat:</b> ${statusText}\n📍 <b>Masofa:</b> ${dist}m`;
-
-        setCheckInTimeDisplay(timeOnly);
-        setArrivalBadge({
-          text: isLate ? "⚠️ Kechikdingiz (08:30 dan keyin)" : "✅ O'z vaqtida keldingiz",
-          isLate,
-        });
-
-        saveAttendanceRecord(profile, statusText, lat, lng, dateKey, timeOnly, dist, livePhotoBase64);
-        sendTelegramPhotoAlert(telegramMsg, livePhotoBase64);
-        alert(isLate ? "⚠️ Kechikdingiz! Davomat rasm bilan botga yuborildi." : "✅ O'z vaqtida keldingiz! Davomat rasm bilan botga yuborildi.");
-      } else if (pendingAction === 'ketdi') {
-        const statusText = `Ishdan ketdi 🔴`;
-        const telegramMsg = `🔴 <b>CHIQISH (Ketish) - ${todayDateStr}</b>\n\n👤 <b>F.I.O:</b> ${profile.fullName}\n💼 <b>Lavozimi:</b> ${profile.lavozimi}\n⏰ <b>Vaqt:</b> ${timeString}\n🔴 <b>Holat:</b> ${statusText}\n📍 <b>Masofa:</b> ${dist}m`;
-
-        setCheckOutTimeDisplay(timeOnly);
-        saveAttendanceRecord(profile, statusText, lat, lng, dateKey, timeOnly, dist, livePhotoBase64);
-        sendTelegramPhotoAlert(telegramMsg, livePhotoBase64);
-        alert("✅ Ketish vaqtingiz rasm bilan botga yuborildi!");
-      }
-
-      setPendingAction(null);
-      e.target.value = '';
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const saveAttendanceRecord = (
+  function saveLog(
     user: UserProfile,
-    status: string,
+    type: ActionType,
+    late: boolean,
     lat: number,
     lng: number,
-    dateKey: string,
-    timeOnly: string,
-    distanceMeters: number,
-    livePhoto?: string
-  ) => {
-    const record: AttendanceLog = {
+    dist: number
+  ) {
+    const now = new Date();
+    const rec: AttendanceLog = {
       pinfl: user.pinfl,
       name: user.fullName,
       lavozimi: user.lavozimi,
-      status,
+      type,
+      late,
+      dateKey: localDateKey(now),
+      timeOnly: hhmm(now),
+      distanceMeters: dist,
       lat,
       lng,
-      timestamp: new Date().toLocaleString(),
-      dateKey,
-      photoUrl: livePhoto || user.photoUrl,
-      timeOnly,
-      distanceMeters,
     };
-    
-    const history1 = JSON.parse(localStorage.getItem('persistent_attendance_logs') || '[]');
-    history1.push(record);
-    localStorage.setItem('persistent_attendance_logs', JSON.stringify(history1));
+    const all = loadLogs();
+    all.push(rec);
+    writeJSON(LOGS_KEY, all);
+    setLogs(all);
+  }
 
-    const history2 = JSON.parse(localStorage.getItem('attendance_logs') || '[]');
-    history2.push(record);
-    localStorage.setItem('attendance_logs', JSON.stringify(history2));
-
-    loadData();
-  };
-
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => setPhotoInput(reader.result as string);
-      reader.readAsDataURL(file);
+  async function deliver(text: string, photo?: string): Promise<string> {
+    const r = await sendToAdmins(text, photo);
+    if (r.sent === 0) {
+      enqueue({ text, photo });
+      return `⚠️ Botga yuborilmadi (internet yoki sozlama xatosi). Keyinroq avtomatik qayta yuboriladi.\n${r.failed.join('\n')}`;
     }
-  };
+    if (r.failed.length) return `⚠️ Ba'zi adminlarga bormadi:\n${r.failed.join('\n')}`;
+    return '✅ Admin botiga yuborildi.';
+  }
 
-  const handleSaveProfile = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (pinflInput.length !== 14) {
-      alert("JSHR 14 xonali bo'lishi kerak!");
-      return;
-    }
-    if (!nameInput.trim() || !photoInput) {
-      alert("Barcha maydonlarni to'ldiring va rasm yuklang!");
-      return;
-    }
+  async function takeLivePhoto(): Promise<string> {
+    const photo = await Camera.getPhoto({
+      quality: 60,
+      width: 720,
+      allowEditing: false,
+      resultType: CameraResultType.DataUrl,
+      source: CameraSource.Camera,
+      direction: CameraDirection.Front,
+      saveToGallery: false,
+    });
+    if (!photo.dataUrl) throw new Error('Rasm olinmadi');
+    return photo.dataUrl;
+  }
 
-    const newProfile: UserProfile = {
-      pinfl: pinflInput,
-      fullName: nameInput,
-      lavozimi: lavozimInput,
-      photoUrl: photoInput,
-    };
+  // ====== KELDIM / KETDIM ======
+  async function handleAttendance(kind: 'keldi' | 'ketdi') {
+    if (busy) return;
+    if (!profile) return alert("Avval profil ma'lumotlaringizni kiriting!");
+    if (distance === null || !coords) return alert(gpsError || 'GPS joylashuvingiz aniqlanmoqda, kuting...');
 
-    localStorage.setItem('user_profile', JSON.stringify(newProfile));
-    setProfile(newProfile);
+    const now = new Date();
+    const dateKey = localDateKey(now);
+    const today = loadLogs().filter((l) => l.pinfl === profile.pinfl && l.dateKey === dateKey);
 
-    try {
-      const users1: UserProfile[] = JSON.parse(localStorage.getItem('registered_users_list') || '[]');
-      const users2: UserProfile[] = JSON.parse(localStorage.getItem('registered_users') || '[]');
-      
-      const allUsers = [...users1, ...users2];
-      const existingIndex = allUsers.findIndex(u => u.pinfl === pinflInput);
-      
-      if (existingIndex >= 0) {
-        allUsers[existingIndex] = newProfile;
-      } else {
-        allUsers.push(newProfile);
-      }
-      
-      localStorage.setItem('registered_users_list', JSON.stringify(allUsers));
-      localStorage.setItem('registered_users', JSON.stringify(allUsers));
-    } catch (err) {
-      console.error(err);
+    if (distance > CONFIG.checkInRadiusMeters) {
+      return alert(
+        `❌ Texnikum hududidan tashqaridasiz (${distance}m).\n${CONFIG.checkInRadiusMeters} metr ichida bo'lishingiz kerak!`
+      );
     }
 
-    const regMsg = `<b>👤 YANGI XODIM TIZIMGA ULANDI</b>\n\n📌 <b>F.I.O:</b> ${nameInput}\n💼 <b>Lavozimi:</b> ${lavozimInput}\n🆔 <b>JSHR:</b> <code>${pinflInput}</code>\n⏰ <b>Vaqt:</b> ${new Date().toLocaleTimeString()}`;
-    sendTelegramPhotoAlert(regMsg, photoInput);
-
-    loadData();
-    alert("Profil saqlandi va admin botiga xabar yuborildi!");
-  };
-
-  const handleAdminLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (passwordInput === ADMIN_PASSWORD) {
-      setIsAuthenticatedAdmin(true);
-      setPasswordInput('');
-      loadData();
+    if (kind === 'keldi') {
+      if (today.some((l) => l.type === 'keldi')) return alert("⛔ Bugun «Keldim» belgisini allaqachon qo'ygansiz!");
     } else {
-      alert("Parol noto'g'ri!");
+      if (!today.some((l) => l.type === 'keldi')) return alert("⛔ Avval «Keldim» belgisini qo'ying!");
+      if (today.some((l) => l.type === 'ketdi')) return alert("⛔ Bugun «Ketdim» belgisini allaqachon qo'ygansiz!");
+      const isSat = now.getDay() === 6;
+      const endMin = isSat ? 13 * 60 : 16 * 60;
+      if (now.getHours() * 60 + now.getMinutes() < endMin) {
+        return alert(`⛔ Hali ish vaqti tugamadi!\nKetishga faqat soat ${isSat ? '13:00' : '16:00'} dan keyin ruxsat beriladi.`);
+      }
     }
-  };
 
-  const handleClearLogs = () => {
-    if (window.confirm("Barcha davomat tarixini o'chirmoqchimisiz?")) {
-      localStorage.removeItem('persistent_attendance_logs');
-      localStorage.removeItem('attendance_logs');
-      loadData();
+    setBusy(true);
+    try {
+      let photo: string;
+      try {
+        photo = await takeLivePhoto();
+      } catch (e: any) {
+        alert('Kamera ochilmadi yoki bekor qilindi. Kamera ruxsatini tekshiring.\n' + (e?.message || ''));
+        return;
+      }
+
+      const t = new Date();
+      let late = false;
+      let text: string;
+      if (kind === 'keldi') {
+        late = t.getHours() * 60 + t.getMinutes() > 8 * 60 + 30;
+        text =
+          `🟢 <b>KIRISH (Kelish) - ${localDateKey(t)}</b>\n\n👤 <b>F.I.O:</b> ${esc(profile.fullName)}\n` +
+          `💼 <b>Lavozimi:</b> ${esc(profile.lavozimi)}\n⏰ <b>Vaqt:</b> ${hhmmss(t)}\n` +
+          `⚠️ <b>Holat:</b> ${late ? 'Kechikib keldi ⚠️' : "O'z vaqtida keldi ✅"}\n📍 <b>Masofa:</b> ${distance}m`;
+      } else {
+        text =
+          `🔴 <b>CHIQISH (Ketish) - ${localDateKey(t)}</b>\n\n👤 <b>F.I.O:</b> ${esc(profile.fullName)}\n` +
+          `💼 <b>Lavozimi:</b> ${esc(profile.lavozimi)}\n⏰ <b>Vaqt:</b> ${hhmmss(t)}\n📍 <b>Masofa:</b> ${distance}m`;
+      }
+
+      saveLog(profile, kind, late, coords.lat, coords.lng, distance);
+      const result = await deliver(text, photo);
+      alert((kind === 'keldi' ? (late ? '⚠️ Kechikdingiz!' : "✅ O'z vaqtida keldingiz!") : '✅ Ketish belgilandi!') + '\n' + result);
+    } finally {
+      setBusy(false);
     }
-  };
+  }
 
-  const isWithinCheckInZone = currentDistance !== null && currentDistance <= COLLEGE_CONFIG.checkInRadiusMeters;
+  // ====== PROFIL ======
+  async function pickProfilePhoto() {
+    try {
+      setPhotoInput(await takeLivePhoto());
+    } catch {
+      alert('Rasm olinmadi. Kamera ruxsatini tekshiring.');
+    }
+  }
+
+  async function handleSaveProfile(e: React.FormEvent) {
+    e.preventDefault();
+    if (pinflInput.length !== 14) return alert("JSHR 14 xonali bo'lishi kerak!");
+    if (!nameInput.trim() || !photoInput) return alert("Barcha maydonlarni to'ldiring va rasm oling!");
+
+    const p: UserProfile = { pinfl: pinflInput, fullName: nameInput.trim(), lavozimi: lavozimInput, photoUrl: photoInput };
+    writeJSON('user_profile', p);
+    setProfile(p);
+
+    const list = readJSON<UserProfile[]>(USERS_KEY, []);
+    const i = list.findIndex((u) => u.pinfl === p.pinfl);
+    if (i >= 0) list[i] = p;
+    else list.push(p);
+    writeJSON(USERS_KEY, list);
+    setUsers(list);
+
+    const msg =
+      `<b>👤 YANGI XODIM TIZIMGA ULANDI</b>\n\n📌 <b>F.I.O:</b> ${esc(p.fullName)}\n` +
+      `💼 <b>Lavozimi:</b> ${esc(p.lavozimi)}\n🆔 <b>JSHR:</b> <code>${p.pinfl}</code>\n⏰ <b>Vaqt:</b> ${hhmmss()}`;
+    const r = await deliver(msg, p.photoUrl);
+    alert('Profil saqlandi.\n' + r);
+  }
+
+  // ====== ADMIN ======
+  const allRows = buildRows(logs);
+  const rows = showAll ? allRows : allRows.filter((r) => r.dateKey === filterDate);
+
+  function downloadCsv() {
+    const csv = rowsToCsv(rows);
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `davomat_${showAll ? 'hammasi' : filterDate}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  async function sendCsvToTelegram() {
+    if (rows.length === 0) return alert("Yuboradigan yozuv yo'q.");
+    const csv = rowsToCsv(rows);
+    const name = `davomat_${showAll ? 'hammasi' : filterDate}.csv`;
+    let ok = 0;
+    const failed: string[] = [];
+    for (const id of CHAT_IDS) {
+      try {
+        await tgSendDocument(id, name, csv, `📊 Davomat hisoboti (${showAll ? 'hammasi' : filterDate})`);
+        ok++;
+      } catch (e: any) {
+        failed.push(`${id}: ${e?.message || e}`);
+      }
+    }
+    alert(ok ? `✅ Hisobot ${ok} ta adminga yuborildi (Excel'da ochiladi).` : '❌ Yuborilmadi:\n' + failed.join('\n'));
+  }
+
+  function handleAdminLogin(e: React.FormEvent) {
+    e.preventDefault();
+    if (ADMIN_PASSWORD && pass === ADMIN_PASSWORD) {
+      setAdminOk(true);
+      setPass('');
+      refresh();
+    } else alert("Parol noto'g'ri!");
+  }
+
+  function handleClear() {
+    if (window.confirm("Bu telefondagi barcha davomat tarixini o'chirmoqchimisiz?")) {
+      localStorage.removeItem(LOGS_KEY);
+      refresh();
+    }
+  }
+
+  // ====== KO'RINISH ======
+  const inZone = distance !== null && distance <= CONFIG.checkInRadiusMeters;
+  const isSat = clock.getDay() === 6;
+  const todayLogs = profile ? logs.filter((l) => l.pinfl === profile.pinfl && l.dateKey === localDateKey(clock)) : [];
+  const myIn = todayLogs.find((l) => l.type === 'keldi');
+  const myOut = todayLogs.find((l) => l.type === 'ketdi');
+
+  const card = 'bg-slate-900 border border-slate-800 rounded-2xl p-4';
+  const input =
+    'w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-teal-500';
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans pb-28 selection:bg-teal-500 selection:text-slate-950">
-      <input
-        ref={liveCameraInputRef}
-        type="file"
-        accept="image/*"
-        capture="user"
-        onChange={handleLivePhotoCaptured}
-        className="hidden"
-      />
-
-      <header className="bg-gradient-to-b from-slate-900 to-slate-950 px-4 pt-4 pb-6 border-b border-slate-800/60 shadow-xl">
-        <div className="max-w-md mx-auto space-y-4">
-          <div className="flex justify-between items-center">
-            <button 
-              onClick={() => { setActiveTab('asosiy'); setIsAuthenticatedAdmin(false); }}
-              className="text-xs bg-slate-800/80 hover:bg-slate-700 px-3 py-1.5 rounded-xl font-medium text-slate-300 transition-all shadow"
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans pb-28">
+      <div className="max-w-md mx-auto p-4 space-y-4">
+        <div className="flex justify-between items-center">
+          <div className="text-4xl font-black font-mono">{hhmm(clock)}</div>
+          <div className="text-right">
+            <span
+              className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
+                isOnline ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : 'bg-rose-500/20 text-rose-400 border-rose-500/30'
+              }`}
             >
-              ← Orqaga
-            </button>
-            <div className="flex items-center space-x-2">
-              <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${isOnline ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'}`}>
-                {isOnline ? 'ONLINE' : 'OFLAYN'}
-              </span>
-              <button 
-                onClick={() => { setActiveTab('admin'); loadData(); }} 
-                className="text-xs bg-rose-600/20 text-rose-400 border border-rose-500/30 px-3 py-1.5 rounded-xl font-bold shadow hover:bg-rose-600 hover:text-white transition-all"
-              >
-                🛡️ Admin
-              </button>
-            </div>
-          </div>
-
-          {profile ? (
-            <div className="flex items-center justify-between bg-slate-900/90 border border-slate-800 p-3 rounded-2xl shadow-inner">
-              <div className="overflow-hidden pr-2">
-                <h2 className="font-bold text-white text-sm truncate">{profile.fullName}</h2>
-                <p className="text-[11px] text-teal-400 font-mono">JSHR: {profile.pinfl} | {profile.lavozimi}</p>
-                <button
-                  onClick={() => {
-                    if (window.confirm("Profilni o'zgartirasizmi?")) {
-                      localStorage.removeItem('user_profile');
-                      setProfile(null);
-                    }
-                  }}
-                  className="text-[10px] text-rose-400 hover:underline mt-0.5 block font-medium"
-                >
-                  Profilni o'zgartirish
-                </button>
-              </div>
-              <div className="relative flex-shrink-0">
-                <img src={profile.photoUrl} alt={profile.fullName} className="w-14 h-14 rounded-2xl object-cover border-2 border-teal-400 shadow-lg" />
-                <span className="absolute -bottom-1 -right-1 w-3.5 h-3.5 bg-emerald-500 border-2 border-slate-900 rounded-full"></span>
-              </div>
-            </div>
-          ) : (
-            <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl text-center space-y-3 shadow-inner">
-              <h3 className="text-xs font-bold text-teal-400">Xodim profilini kiriting:</h3>
-              <form onSubmit={handleSaveProfile} className="space-y-2.5">
-                <input
-                  type="text"
-                  maxLength={14}
-                  value={pinflInput}
-                  onChange={(e) => setPinflInput(e.target.value.replace(/\D/g, ''))}
-                  placeholder="14 xonali JSHR..."
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-teal-500"
-                  required
-                />
-                <input
-                  type="text"
-                  value={nameInput}
-                  onChange={(e) => setNameInput(e.target.value)}
-                  placeholder="Ism Familiyangiz (F.I.O)"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-teal-500"
-                  required
-                />
-                <select
-                  value={lavozimInput}
-                  onChange={(e) => setLavozimInput(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-teal-500"
-                >
-                  <option value="O'qituvchi">O'qituvchi</option>
-                  <option value="ICHTU">ICHTU</option>
-                  <option value="Ma'muriyat">Ma'muriyat</option>
-                  <option value="Xodim">Xodim</option>
-                </select>
-                <input
-                  type="file"
-                  accept="image/*"
-                  capture="user"
-                  onChange={handlePhotoUpload}
-                  className="w-full text-[11px] text-slate-400 file:mr-2 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-[11px] file:font-semibold file:bg-teal-600 file:text-white cursor-pointer"
-                  required
-                />
-                <button type="submit" className="w-full py-2.5 bg-teal-600 hover:bg-teal-500 text-white font-bold rounded-xl text-xs shadow-md transition-all">
-                  Saqlash va Boshlash
-                </button>
-              </form>
-            </div>
-          )}
-
-          <div className="flex justify-between items-end pt-2">
-            <div>
-              <div className="text-4xl font-black text-white tracking-tight font-mono">{currentTimeStr || '08:00'}</div>
-              <div className="text-xs text-slate-400 capitalize font-medium">{currentDateStr || 'Juma, 13-noyabr'}</div>
-            </div>
-            <div className="bg-slate-900 border border-slate-800 px-3.5 py-2 rounded-2xl text-right shadow-inner">
-              <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider">
-                {isSaturday ? 'Shanba Ish Vaqti' : 'Ish Vaqti'}
-              </span>
-              <span className="text-sm font-extrabold text-teal-400 font-mono">
-                {isSaturday ? '08:30 / 13:00' : '08:30 / 16:00'}
-              </span>
-            </div>
-          </div>
-
-          <div className="bg-slate-900/90 border border-slate-800 p-3.5 rounded-2xl shadow-inner space-y-1">
-            <div className="flex justify-between items-center text-xs">
-              <span className={`font-bold flex items-center space-x-1.5 ${isWithinCheckInZone ? 'text-emerald-400' : 'text-rose-400'}`}>
-                <span className={`w-2.5 h-2.5 rounded-full ${isWithinCheckInZone ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`}></span>
-                <span>{isWithinCheckInZone ? 'Davomat hududidasiz (100m)' : 'Davomat hududidan tashqaridasiz'}</span>
-              </span>
-              <span className="text-slate-400 font-mono text-[11px]">
-                {currentDistance !== null ? `${currentDistance} m` : 'GPS...'}
-              </span>
-            </div>
-            <div className="text-[11px] text-slate-400 font-medium">
-              {isWithinCheckInZone
-                ? '✅ Davomatdan o\'tishingiz mumkin'
-                : `⚠️ Davomatdan o'tish uchun 100m ichiga kiring (Chegara: 600m)`}
-            </div>
-          </div>
-
-          {profile && (
-            <div className="grid grid-cols-2 gap-3 pt-1">
-              <button
-                onClick={handleKeldimClick}
-                className="py-3.5 px-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 active:scale-95 text-white font-bold rounded-2xl text-xs shadow-lg flex flex-col items-center justify-center space-y-1 transition-all"
-              >
-                <span className="text-base">📸 Keldim</span>
-                <span className="text-[10px] text-emerald-100 font-normal">Jonli rasm bilan</span>
-              </button>
-
-              <button
-                onClick={handleKetdimClick}
-                className="py-3.5 px-3 bg-gradient-to-r from-rose-600 to-orange-600 hover:from-rose-500 hover:to-orange-500 active:scale-95 text-white font-bold rounded-2xl text-xs shadow-lg flex flex-col items-center justify-center space-y-1 transition-all"
-              >
-                <span className="text-base">📸 Ketdim</span>
-                <span className="text-[10px] text-rose-100 font-normal">{isSaturday ? '13:00 dan keyin' : '16:00 dan keyin'}</span>
-              </button>
-            </div>
-          )}
-
-          {arrivalBadge && (
-            <div className={`p-2.5 rounded-xl border text-center text-xs font-bold ${arrivalBadge.isLate ? 'bg-rose-500/15 border-rose-500/40 text-rose-400' : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400'}`}>
-              {arrivalBadge.text}
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-3 pt-1">
-            <div className="bg-slate-900/90 border border-slate-800 p-3 rounded-2xl shadow-inner flex items-center space-x-3">
-              <div className="w-9 h-9 rounded-xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-400 font-bold text-sm">
-                ➔
-              </div>
-              <div>
-                <span className="text-[10px] text-slate-400 block font-semibold">Kirish</span>
-                <span className="text-xs font-bold text-white font-mono">{checkInTimeDisplay}</span>
-              </div>
-            </div>
-            <div className="bg-slate-900/90 border border-slate-800 p-3 rounded-2xl shadow-inner flex items-center space-x-3">
-              <div className="w-9 h-9 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 font-bold text-sm">
-                ←
-              </div>
-              <div>
-                <span className="text-[10px] text-slate-400 block font-semibold">Chiqish</span>
-                <span className="text-xs font-bold text-white font-mono">{checkOutTimeDisplay}</span>
-              </div>
+              {isOnline ? 'ONLINE' : 'OFLAYN'}
+            </span>
+            <div className="text-[11px] text-slate-400 mt-1">
+              Ish vaqti: {isSat ? '08:30 / 13:00' : '08:30 / 16:00'}
             </div>
           </div>
         </div>
-      </header>
 
-      <main className="flex-1 p-4 max-w-md mx-auto w-full space-y-4">
-        {activeTab === 'asosiy' && (
-          <div className="space-y-4">
-            <div className="grid grid-cols-3 gap-2.5">
-              <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl text-center shadow-md space-y-1">
-                <span className="w-5 h-5 mx-auto bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center text-[10px] font-bold">✓</span>
-                <div className="text-xl font-black text-white font-mono">{attendanceLogs.length}</div>
-                <div className="text-[10px] text-slate-400 font-medium">Qatnashgan</div>
-              </div>
-              <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl text-center shadow-md space-y-1">
-                <span className="w-5 h-5 mx-auto bg-rose-500/20 text-rose-400 rounded-full flex items-center justify-center text-[10px] font-bold">!</span>
-                <div className="text-xl font-black text-white font-mono">0</div>
-                <div className="text-[10px] text-slate-400 font-medium">Qoldirilgan</div>
-              </div>
-              <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl text-center shadow-md space-y-1">
-                <span className="w-5 h-5 mx-auto bg-indigo-500/20 text-indigo-400 rounded-full flex items-center justify-center text-[10px] font-bold">i</span>
-                <div className="text-xl font-black text-white font-mono">96</div>
-                <div className="text-[10px] text-slate-400 font-medium">Jami soat</div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'davomat' && (
-          <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl shadow-xl space-y-3 text-center">
-            <h2 className="text-sm font-bold text-white">Sizning Bugungi Holatingiz</h2>
-            <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 text-xs text-emerald-400 font-mono space-y-1">
-              <div>Kirish: {checkInTimeDisplay} | Chiqish: {checkOutTimeDisplay}</div>
-              <div>Masofa: {currentDistance !== null ? `${currentDistance} m` : 'Aniqlanmoqda...'}</div>
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'ai' && (
-          <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl shadow-xl space-y-3 text-center">
-            <h2 className="text-sm font-bold text-teal-400">AI Nazorat Tizimi</h2>
-            <p className="text-xs text-slate-400">100m geozona va 600m chegara nazoratda.</p>
-          </div>
-        )}
-
-        {activeTab === 'fanlar' && (
-          <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl shadow-xl space-y-3">
-            <h2 className="text-sm font-bold text-white">Texnikum Fanlari va Bo'limlari</h2>
-          </div>
-        )}
-
-        {activeTab === 'profil' && (
-          <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl shadow-xl space-y-4 text-center">
-            <h2 className="text-sm font-bold text-white">Xodim Profili</h2>
-            {profile ? (
-              <div className="space-y-3">
-                <img src={profile.photoUrl} alt={profile.fullName} className="w-20 h-20 rounded-2xl object-cover mx-auto border-2 border-teal-400 shadow-lg" />
-                <div>
-                  <h3 className="font-bold text-white text-sm">{profile.fullName}</h3>
-                  <p className="text-xs text-slate-400 font-mono">JSHR: {profile.pinfl} ({profile.lavozimi})</p>
+        {tab === 'asosiy' && (
+          <>
+            {!profile ? (
+              <form onSubmit={handleSaveProfile} className={`${card} space-y-2.5`}>
+                <h3 className="text-xs font-bold text-teal-400 text-center">Xodim profilini kiriting</h3>
+                <input
+                  className={`${input} font-mono`}
+                  maxLength={14}
+                  inputMode="numeric"
+                  value={pinflInput}
+                  onChange={(e) => setPinflInput(e.target.value.replace(/\D/g, ''))}
+                  placeholder="14 xonali JSHR..."
+                />
+                <input className={input} value={nameInput} onChange={(e) => setNameInput(e.target.value)} placeholder="Ism Familiyangiz (F.I.O)" />
+                <select className={input} value={lavozimInput} onChange={(e) => setLavozimInput(e.target.value)}>
+                  <option>O'qituvchi</option>
+                  <option>ICHTU</option>
+                  <option>Ma'muriyat</option>
+                  <option>Xodim</option>
+                </select>
+                <button type="button" onClick={pickProfilePhoto} className="w-full py-2 bg-slate-800 rounded-xl text-xs font-bold">
+                  {photoInput ? '✅ Rasm olindi (qayta olish)' : '📸 Profil rasmini olish'}
+                </button>
+                {photoInput && <img src={photoInput} alt="" className="w-20 h-20 rounded-2xl object-cover mx-auto" />}
+                <button type="submit" className="w-full py-2.5 bg-teal-600 hover:bg-teal-500 rounded-xl text-xs font-bold">
+                  Saqlash va Boshlash
+                </button>
+              </form>
+            ) : (
+              <>
+                <div className={`${card} flex items-center justify-between`}>
+                  <div className="overflow-hidden pr-2">
+                    <h2 className="font-bold text-sm truncate">{profile.fullName}</h2>
+                    <p className="text-[11px] text-teal-400 font-mono">{profile.lavozimi} | {profile.pinfl}</p>
+                  </div>
+                  <img src={profile.photoUrl} alt="" className="w-14 h-14 rounded-2xl object-cover border-2 border-teal-400" />
                 </div>
+
+                <div className={`${card} space-y-1`}>
+                  <div className="flex justify-between text-xs">
+                    <span className={`font-bold ${inZone ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      {inZone ? '● Davomat hududidasiz' : '● Hududdan tashqaridasiz'}
+                    </span>
+                    <span className="text-slate-400 font-mono">{distance !== null ? `${distance} m` : 'GPS...'}</span>
+                  </div>
+                  {gpsError && <div className="text-[11px] text-amber-400">{gpsError}</div>}
+                  {!gpsError && !inZone && distance !== null && (
+                    <div className="text-[11px] text-slate-400">Davomat uchun {CONFIG.checkInRadiusMeters}m ichiga kiring.</div>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    disabled={busy}
+                    onClick={() => handleAttendance('keldi')}
+                    className="py-4 bg-gradient-to-r from-emerald-600 to-teal-600 disabled:opacity-50 active:scale-95 rounded-2xl text-sm font-bold"
+                  >
+                    📸 Keldim
+                    <div className="text-[10px] font-normal text-emerald-100">Jonli rasm bilan</div>
+                  </button>
+                  <button
+                    disabled={busy}
+                    onClick={() => handleAttendance('ketdi')}
+                    className="py-4 bg-gradient-to-r from-rose-600 to-orange-600 disabled:opacity-50 active:scale-95 rounded-2xl text-sm font-bold"
+                  >
+                    📸 Ketdim
+                    <div className="text-[10px] font-normal text-rose-100">{isSat ? '13:00 dan keyin' : '16:00 dan keyin'}</div>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className={card}>
+                    <div className="text-[10px] text-slate-400">Kirish</div>
+                    <div className="text-sm font-bold font-mono">{myIn ? myIn.timeOnly : '--:--'}</div>
+                    {myIn && (
+                      <div className={`text-[10px] font-bold ${myIn.late ? 'text-rose-400' : 'text-emerald-400'}`}>
+                        {myIn.late ? 'Kechikdingiz' : "O'z vaqtida"}
+                      </div>
+                    )}
+                  </div>
+                  <div className={card}>
+                    <div className="text-[10px] text-slate-400">Chiqish</div>
+                    <div className="text-sm font-bold font-mono">{myOut ? myOut.timeOnly : '--:--'}</div>
+                  </div>
+                </div>
+              </>
+            )}
+          </>
+        )}
+
+        {tab === 'profil' && (
+          <div className={`${card} text-center space-y-3`}>
+            <h2 className="text-sm font-bold">Xodim profili</h2>
+            {profile ? (
+              <>
+                <img src={profile.photoUrl} alt="" className="w-20 h-20 rounded-2xl object-cover mx-auto border-2 border-teal-400" />
+                <div className="font-bold text-sm">{profile.fullName}</div>
+                <div className="text-xs text-slate-400 font-mono">{profile.lavozimi} | {profile.pinfl}</div>
                 <button
                   onClick={() => {
                     if (window.confirm("Profilni o'zgartirasizmi?")) {
                       localStorage.removeItem('user_profile');
                       setProfile(null);
+                      setTab('asosiy');
                     }
                   }}
-                  className="px-4 py-2 bg-rose-600/20 text-rose-400 border border-rose-500/30 rounded-xl text-xs font-bold hover:bg-rose-600 hover:text-white transition-all"
+                  className="px-4 py-2 bg-rose-600/20 text-rose-400 border border-rose-500/30 rounded-xl text-xs font-bold"
                 >
                   Profilni yangilash
                 </button>
-              </div>
+              </>
             ) : (
-              <p className="text-xs text-slate-400">Profil ma'lumotlari kiritilmagan.</p>
+              <p className="text-xs text-slate-400">Profil kiritilmagan.</p>
             )}
           </div>
         )}
 
-        {activeTab === 'admin' && (
-          <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl shadow-xl space-y-4">
-            {!isAuthenticatedAdmin ? (
+        {tab === 'admin' && (
+          <div className={`${card} space-y-4`}>
+            {!adminOk ? (
               <form onSubmit={handleAdminLogin} className="space-y-3 max-w-xs mx-auto py-4">
-                <h2 className="text-sm font-bold text-white text-center">Admin Paneliga Kirish</h2>
-                <input
-                  type="password"
-                  value={passwordInput}
-                  onChange={(e) => setPasswordInput(e.target.value)}
-                  placeholder="Parolni kiriting..."
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white text-center font-mono focus:outline-none focus:border-teal-500"
-                  required
-                />
-                <button type="submit" className="w-full py-2.5 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl text-xs shadow-md transition-all">
-                  Kirish
-                </button>
+                <h2 className="text-sm font-bold text-center">Admin paneliga kirish</h2>
+                <input type="password" className={`${input} text-center font-mono`} value={pass} onChange={(e) => setPass(e.target.value)} placeholder="Parol..." />
+                <button className="w-full py-2.5 bg-rose-600 rounded-xl text-xs font-bold">Kirish</button>
               </form>
             ) : (
-              <div className="space-y-4">
+              <>
                 <div className="flex justify-between items-center flex-wrap gap-2">
-                  <h2 className="text-sm font-bold text-white">🛡️ Admin Boshqaruv Paneli</h2>
-                  <div className="flex space-x-2">
-                    <button onClick={loadData} className="px-3 py-1.5 bg-indigo-600 text-xs text-white rounded-xl font-medium">Yangilash</button>
-                    <button onClick={handleClearLogs} className="px-3 py-1.5 bg-rose-600 text-xs text-white rounded-xl font-medium">Tozalash</button>
-                    <button onClick={() => setIsAuthenticatedAdmin(false)} className="px-3 py-1.5 bg-slate-800 text-xs text-slate-300 rounded-xl">Chiqish</button>
-                  </div>
+                  <h2 className="text-sm font-bold">🛡️ Davomat jadvali</h2>
+                  <button onClick={() => setAdminOk(false)} className="px-3 py-1.5 bg-slate-800 text-xs rounded-xl">Chiqish</button>
                 </div>
 
-                <div className="space-y-3">
-                  <h3 className="text-xs font-bold text-teal-400 uppercase tracking-wider">Ilovaga Ulangan Xodimlar ({registeredUsers.length}):</h3>
-                  <div className="space-y-2 max-h-[140px] overflow-y-auto pr-1">
-                    {registeredUsers.length === 0 ? (
-                      <p className="text-xs text-slate-500 text-center py-2">Ulangan xodimlar yo'q.</p>
-                    ) : (
-                      registeredUsers.map((u, i) => (
-                        <div key={i} className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 text-xs flex items-center space-x-2.5">
-                          {u.photoUrl && <img src={u.photoUrl} alt="" className="w-8 h-8 rounded-lg object-cover" />}
-                          <div className="overflow-hidden">
-                            <div className="font-bold text-white truncate">{u.fullName}</div>
-                            <div className="text-[10px] text-slate-400 font-mono">{u.lavozimi} | {u.pinfl}</div>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <input type="date" className={`${input} !w-auto`} value={filterDate} onChange={(e) => { setFilterDate(e.target.value); setShowAll(false); }} />
+                  <label className="text-xs text-slate-300 flex items-center gap-1">
+                    <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> Hammasi
+                  </label>
                 </div>
 
-                <div className="space-y-2 pt-2 border-t border-slate-800">
-                  <h3 className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Davomat Qayd Etganlar ({attendanceLogs.length}):</h3>
-                  <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
-                    {attendanceLogs.length === 0 ? (
-                      <p className="text-xs text-slate-500 text-center py-4">Davomat yozuvlari mavjud emas.</p>
-                    ) : (
-                      attendanceLogs.map((log, index) => (
-                        <div key={index} className="bg-slate-950 p-3 rounded-2xl border border-slate-800 text-xs flex items-center space-x-3">
-                          {log.photoUrl && (
-                            <img src={log.photoUrl} alt={log.name} className="w-10 h-10 rounded-xl object-cover border border-teal-500/50 flex-shrink-0" />
-                          )}
-                          <div className="flex-1 space-y-1 overflow-hidden">
-                            <div className="flex justify-between font-bold text-white">
-                              <span className="truncate">{log.name}</span>
-                              <span className="text-teal-400 font-bold">📍 {log.distanceMeters ?? '?'}m</span>
-                            </div>
-                            <div className="text-[10px] text-slate-300 font-medium">💼 {log.lavozimi || 'Xodim'}</div>
-                            <div className={`text-[10px] font-bold ${log.status.includes('Kechikdi') || log.status.includes('chiqdi') ? 'text-rose-400' : 'text-emerald-400'}`}>
-                              {log.status}
-                            </div>
-                            <div className="text-slate-400 font-mono text-[10px]">JSHR: {log.pinfl}</div>
-                            <div className="text-slate-500 text-[10px]">{log.timestamp}</div>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
+                <div className="flex gap-2 flex-wrap">
+                  <button onClick={refresh} className="px-3 py-1.5 bg-indigo-600 text-xs rounded-xl">Yangilash</button>
+                  <button onClick={downloadCsv} className="px-3 py-1.5 bg-emerald-600 text-xs rounded-xl">⬇️ CSV yuklab olish</button>
+                  <button onClick={sendCsvToTelegram} className="px-3 py-1.5 bg-sky-600 text-xs rounded-xl">📨 Telegramga CSV</button>
+                  <button onClick={handleClear} className="px-3 py-1.5 bg-rose-600 text-xs rounded-xl">Tozalash</button>
                 </div>
-              </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[11px]">
+                    <thead>
+                      <tr className="text-slate-400 text-left border-b border-slate-800">
+                        <th className="py-1 pr-2">F.I.O</th>
+                        {showAll && <th className="pr-2">Sana</th>}
+                        <th className="pr-2">Keldi</th>
+                        <th className="pr-2">Ketdi</th>
+                        <th>Holat</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.length === 0 && (
+                        <tr><td colSpan={5} className="text-center text-slate-500 py-4">Yozuvlar yo'q</td></tr>
+                      )}
+                      {rows.map((r) => (
+                        <tr key={r.pinfl + r.dateKey} className="border-b border-slate-800/60">
+                          <td className="py-1.5 pr-2">
+                            <div className="font-bold">{r.name}</div>
+                            <div className="text-slate-500">{r.lavozimi}</div>
+                          </td>
+                          {showAll && <td className="pr-2 font-mono">{r.dateKey}</td>}
+                          <td className="pr-2 font-mono">{r.keldi || '--:--'}</td>
+                          <td className="pr-2 font-mono">{r.ketdi || '--:--'}</td>
+                          <td className={r.late || r.chiqdi ? 'text-rose-400' : 'text-emerald-400'}>
+                            {r.keldi ? (r.late ? 'Kechikdi' : "O'z vaqtida") : '-'}
+                            {r.chiqdi ? ` 🚨 ${r.chiqdi}` : ''}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="text-[10px] text-slate-500">
+                  Ro'yxatdan o'tgan xodimlar (shu telefonda): {users.length}. Barcha xodimlarning keldi/ketdi xabarlari
+                  Telegram admin botiga tushadi.
+                </div>
+              </>
             )}
           </div>
         )}
-      </main>
+      </div>
 
-      <nav className="fixed bottom-3 left-1/2 -translate-x-1/2 w-[92%] max-w-md bg-slate-900/95 backdrop-blur-xl border border-slate-800 px-3 py-2 rounded-3xl shadow-2xl z-50 flex justify-between items-center">
-        <button
-          onClick={() => { setActiveTab('asosiy'); setIsAuthenticatedAdmin(false); }}
-          className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'asosiy' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
-        >
-          <span className="text-sm">🏠</span>
-          <span className="text-[9px] font-bold">Asosiy</span>
-        </button>
-
-        <button
-          onClick={() => { setActiveTab('davomat'); setIsAuthenticatedAdmin(false); }}
-          className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'davomat' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
-        >
-          <span className="text-sm">⏱️</span>
-          <span className="text-[9px] font-bold">Davomat</span>
-        </button>
-
-        <button
-          onClick={() => { setActiveTab('ai'); setIsAuthenticatedAdmin(false); }}
-          className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'ai' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
-        >
-          <span className="text-sm">🤖</span>
-          <span className="text-[9px] font-bold">Navbat</span>
-        </button>
-
-        <button
-          onClick={() => { setActiveTab('fanlar'); setIsAuthenticatedAdmin(false); }}
-          className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'fanlar' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
-        >
-          <span className="text-sm">📚</span>
-          <span className="text-[9px] font-bold">Fanlar</span>
-        </button>
-
-        <button
-          onClick={() => { setActiveTab('profil'); setIsAuthenticatedAdmin(false); }}
-          className={`flex flex-col items-center space-y-0.5 px-3 py-1.5 rounded-2xl transition-all ${activeTab === 'profil' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
-        >
-          <span className="text-sm">👤</span>
-          <span className="text-[9px] font-bold">Profil</span>
-        </button>
+      <nav className="fixed bottom-3 left-1/2 -translate-x-1/2 w-[92%] max-w-md bg-slate-900/95 border border-slate-800 px-3 py-2 rounded-3xl shadow-2xl z-50 flex justify-around">
+        {([
+          ['asosiy', '🏠', 'Asosiy'],
+          ['profil', '👤', 'Profil'],
+          ['admin', '🛡️', 'Admin'],
+        ] as const).map(([id, icon, label]) => (
+          <button
+            key={id}
+            onClick={() => { setTab(id); if (id !== 'admin') setAdminOk(false); else refresh(); }}
+            className={`flex flex-col items-center px-5 py-1.5 rounded-2xl ${tab === id ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white' : 'text-slate-400'}`}
+          >
+            <span className="text-sm">{icon}</span>
+            <span className="text-[9px] font-bold">{label}</span>
+          </button>
+        ))}
       </nav>
     </div>
   );
-}
+  }
