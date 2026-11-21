@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Geolocation } from '@capacitor/geolocation';
 import { Camera, CameraDirection, CameraResultType, CameraSource } from '@capacitor/camera';
 
-// ====== SOZLAMALAR (maxfiy qiymatlar Codemagic environment variables orqali beriladi) ======
+// ====== SOZLAMALAR (maxfiy qiymatlar Codemagic/Render environment variables orqali) ======
 const env = ((import.meta as any).env || {}) as Record<string, string>;
 const BOT_TOKEN = env.VITE_TELEGRAM_BOT_TOKEN || '';
 const CHAT_IDS: string[] = (env.VITE_TELEGRAM_CHAT_IDS || '')
@@ -51,6 +51,13 @@ const localDateKey = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth() 
 const hhmm = (d = new Date()) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 const hhmmss = (d = new Date()) => `${hhmm(d)}:${pad(d.getSeconds())}`;
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const initials = (name: string) =>
+  name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase())
+    .join('');
 
 function readJSON<T>(key: string, fallback: T): T {
   try {
@@ -172,20 +179,34 @@ interface DayRow {
   pinfl: string;
   name: string;
   lavozimi: string;
+  photoUrl?: string;
   dateKey: string;
   keldi?: string;
   ketdi?: string;
   late: boolean;
   chiqdi?: string;
+  absent: boolean;
 }
 
-function buildRows(logs: AttendanceLog[]): DayRow[] {
+/** dateKey berilsa: shu kunga barcha ro'yxatdan o'tganlar (kelmaganlar ham). null bo'lsa: hamma kunlar. */
+function buildRows(logs: AttendanceLog[], users: UserProfile[], dateKey: string | null): DayRow[] {
+  const photo = new Map(users.map((u) => [u.pinfl, u.photoUrl]));
+  const src = dateKey ? logs.filter((l) => l.dateKey === dateKey) : logs;
   const map = new Map<string, DayRow>();
-  for (const l of logs) {
+
+  for (const l of src) {
     const key = `${l.pinfl}|${l.dateKey}`;
     const row =
       map.get(key) ||
-      ({ pinfl: l.pinfl, name: l.name, lavozimi: l.lavozimi, dateKey: l.dateKey, late: false } as DayRow);
+      ({
+        pinfl: l.pinfl,
+        name: l.name,
+        lavozimi: l.lavozimi,
+        photoUrl: photo.get(l.pinfl),
+        dateKey: l.dateKey,
+        late: false,
+        absent: false,
+      } as DayRow);
     if (l.type === 'keldi') {
       row.keldi = l.timeOnly;
       row.late = l.late;
@@ -193,10 +214,48 @@ function buildRows(logs: AttendanceLog[]): DayRow[] {
     else if (l.type === 'chiqdi') row.chiqdi = l.timeOnly;
     map.set(key, row);
   }
-  return Array.from(map.values()).sort((a, b) =>
-    a.dateKey === b.dateKey ? a.name.localeCompare(b.name) : b.dateKey.localeCompare(a.dateKey)
-  );
+
+  if (dateKey) {
+    for (const u of users) {
+      const key = `${u.pinfl}|${dateKey}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          pinfl: u.pinfl,
+          name: u.fullName,
+          lavozimi: u.lavozimi,
+          photoUrl: u.photoUrl,
+          dateKey,
+          late: false,
+          absent: true,
+        });
+      }
+    }
+  } else {
+    const seen = new Set(src.map((l) => l.pinfl));
+    for (const u of users) {
+      if (!seen.has(u.pinfl)) {
+        map.set(`${u.pinfl}|-`, {
+          pinfl: u.pinfl,
+          name: u.fullName,
+          lavozimi: u.lavozimi,
+          photoUrl: u.photoUrl,
+          dateKey: '-',
+          late: false,
+          absent: true,
+        });
+      }
+    }
+  }
+
+  return Array.from(map.values()).sort((a, b) => {
+    if (a.dateKey !== b.dateKey) return b.dateKey.localeCompare(a.dateKey);
+    if (a.absent !== b.absent) return a.absent ? 1 : -1;
+    return a.name.localeCompare(b.name);
+  });
 }
+
+const statusOf = (r: DayRow) =>
+  r.absent ? (r.dateKey === '-' ? "Yozuv yo'q" : 'Kelmagan') : r.late ? 'Kechikdi' : "O'z vaqtida";
 
 function rowsToCsv(rows: DayRow[]) {
   const q = (s: string) => `"${s.replace(/"/g, '""')}"`;
@@ -210,12 +269,40 @@ function rowsToCsv(rows: DayRow[]) {
         r.dateKey,
         r.keldi || '',
         r.ketdi || '',
-        r.keldi ? (r.late ? 'Kechikdi' : "O'z vaqtida") : '',
+        statusOf(r),
         r.chiqdi || '',
       ].join(',')
     );
   }
   return lines.join('\n');
+}
+
+// ====== KICHIK KOMPONENTLAR ======
+function Avatar({ src, name, size = 44 }: { src?: string; name: string; size?: number }) {
+  const style = { width: size, height: size };
+  if (src) {
+    return <img src={src} alt="" style={style} className="rounded-2xl object-cover flex-shrink-0 bg-slate-800" />;
+  }
+  return (
+    <div
+      style={style}
+      className="rounded-2xl flex-shrink-0 flex items-center justify-center font-bold text-sm text-white bg-gradient-to-br from-teal-500 to-indigo-500"
+    >
+      {initials(name) || '?'}
+    </div>
+  );
+}
+
+function Badge({ tone, children }: { tone: 'ok' | 'late' | 'absent' | 'info'; children: React.ReactNode }) {
+  const tones = {
+    ok: 'bg-emerald-500/15 text-emerald-300 ring-emerald-400/30',
+    late: 'bg-amber-500/15 text-amber-300 ring-amber-400/30',
+    absent: 'bg-rose-500/15 text-rose-300 ring-rose-400/30',
+    info: 'bg-sky-500/15 text-sky-300 ring-sky-400/30',
+  };
+  return (
+    <span className={`inline-block px-2.5 py-1 rounded-full text-[10px] font-bold ring-1 ${tones[tone]}`}>{children}</span>
+  );
 }
 
 // ====== ILOVA ======
@@ -241,6 +328,7 @@ export default function App() {
   const [pass, setPass] = useState('');
   const [filterDate, setFilterDate] = useState<string>(localDateKey());
   const [showAll, setShowAll] = useState(false);
+  const [search, setSearch] = useState('');
 
   const profileRef = useRef(profile);
   profileRef.current = profile;
@@ -249,6 +337,17 @@ export default function App() {
     setLogs(loadLogs());
     setUsers(readJSON<UserProfile[]>(USERS_KEY, []));
   }, []);
+
+  // joriy profil ro'yxatda bo'lmasa, qo'shib qo'yamiz
+  useEffect(() => {
+    if (!profile) return;
+    const list = readJSON<UserProfile[]>(USERS_KEY, []);
+    if (!list.some((u) => u.pinfl === profile.pinfl)) {
+      list.push(profile);
+      writeJSON(USERS_KEY, list);
+      setUsers(list);
+    }
+  }, [profile]);
 
   useEffect(() => {
     const t = setInterval(() => setClock(new Date()), 1000);
@@ -308,7 +407,7 @@ export default function App() {
       try {
         const perm = await Geolocation.requestPermissions();
         if (perm.location !== 'granted' && perm.coarseLocation !== 'granted') {
-          setGpsError("Joylashuv ruxsati berilmagan. Sozlamalar → Ilovalar → Ruxsatlar → Joylashuv.");
+          setGpsError('Joylashuv ruxsati berilmagan. Sozlamalar → Ilovalar → Ruxsatlar → Joylashuv.');
           return;
         }
         const id = await Geolocation.watchPosition(
@@ -335,14 +434,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile]);
 
-  function saveLog(
-    user: UserProfile,
-    type: ActionType,
-    late: boolean,
-    lat: number,
-    lng: number,
-    dist: number
-  ) {
+  function saveLog(user: UserProfile, type: ActionType, late: boolean, lat: number, lng: number, dist: number) {
     const now = new Date();
     const rec: AttendanceLog = {
       pinfl: user.pinfl,
@@ -441,7 +533,11 @@ export default function App() {
 
       saveLog(profile, kind, late, coords.lat, coords.lng, distance);
       const result = await deliver(text, photo);
-      alert((kind === 'keldi' ? (late ? '⚠️ Kechikdingiz!' : "✅ O'z vaqtida keldingiz!") : '✅ Ketish belgilandi!') + '\n' + result);
+      alert(
+        (kind === 'keldi' ? (late ? '⚠️ Kechikdingiz!' : "✅ O'z vaqtida keldingiz!") : '✅ Ketish belgilandi!') +
+          '\n' +
+          result
+      );
     } finally {
       setBusy(false);
     }
@@ -480,8 +576,14 @@ export default function App() {
   }
 
   // ====== ADMIN ======
-  const allRows = buildRows(logs);
-  const rows = showAll ? allRows : allRows.filter((r) => r.dateKey === filterDate);
+  const allRows = buildRows(logs, users, showAll ? null : filterDate);
+  const rows = allRows.filter((r) => r.name.toLowerCase().includes(search.trim().toLowerCase()));
+  const stat = {
+    total: allRows.length,
+    came: allRows.filter((r) => !r.absent).length,
+    late: allRows.filter((r) => !r.absent && r.late).length,
+    absent: allRows.filter((r) => r.absent).length,
+  };
 
   function downloadCsv() {
     const csv = rowsToCsv(rows);
@@ -535,113 +637,171 @@ export default function App() {
   const todayLogs = profile ? logs.filter((l) => l.pinfl === profile.pinfl && l.dateKey === localDateKey(clock)) : [];
   const myIn = todayLogs.find((l) => l.type === 'keldi');
   const myOut = todayLogs.find((l) => l.type === 'ketdi');
+  const dateLabel = clock.toLocaleDateString('uz-UZ', { weekday: 'long', day: 'numeric', month: 'long' });
+  const proximity = distance === null ? 0 : Math.max(4, Math.min(100, 100 - (distance / CONFIG.alertBoundaryMeters) * 100));
 
-  const card = 'bg-slate-900 border border-slate-800 rounded-2xl p-4';
-  const input =
-    'w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-teal-500';
+  const glass = 'bg-white/[0.04] backdrop-blur-xl border border-white/10 rounded-3xl shadow-[0_8px_32px_rgba(0,0,0,0.35)]';
+  const field =
+    'w-full bg-white/[0.06] border border-white/10 rounded-2xl px-4 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-teal-400/70';
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans pb-28">
-      <div className="max-w-md mx-auto p-4 space-y-4">
-        <div className="flex justify-between items-center">
-          <div className="text-4xl font-black font-mono">{hhmm(clock)}</div>
-          <div className="text-right">
+    <div
+      className="min-h-screen text-slate-100 font-sans pb-32"
+      style={{
+        background:
+          'radial-gradient(900px 500px at 0% -5%, rgba(20,184,166,0.22), transparent 60%), radial-gradient(800px 500px at 100% 0%, rgba(99,102,241,0.22), transparent 60%), #050816',
+        paddingTop: 'env(safe-area-inset-top)',
+      }}
+    >
+      <div className="max-w-md mx-auto px-4 pt-5 space-y-4">
+        {/* Yuqori qism */}
+        <div className="flex items-start justify-between">
+          <div>
+            <div className="text-[11px] uppercase tracking-[0.2em] text-slate-400 font-semibold">Davomat</div>
+            <div className="text-5xl font-black tracking-tight font-mono bg-gradient-to-r from-white to-teal-200 bg-clip-text text-transparent">
+              {hhmm(clock)}
+            </div>
+            <div className="text-xs text-slate-400 capitalize mt-1">{dateLabel}</div>
+          </div>
+          <div className="text-right space-y-2">
             <span
-              className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
-                isOnline ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : 'bg-rose-500/20 text-rose-400 border-rose-500/30'
+              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold ring-1 ${
+                isOnline ? 'bg-emerald-500/15 text-emerald-300 ring-emerald-400/30' : 'bg-rose-500/15 text-rose-300 ring-rose-400/30'
               }`}
             >
+              <span className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
               {isOnline ? 'ONLINE' : 'OFLAYN'}
             </span>
-            <div className="text-[11px] text-slate-400 mt-1">
-              Ish vaqti: {isSat ? '08:30 / 13:00' : '08:30 / 16:00'}
+            <div className="text-[11px] text-slate-400">
+              Ish vaqti
+              <div className="text-sm font-bold text-teal-300 font-mono">{isSat ? '08:30 – 13:00' : '08:30 – 16:00'}</div>
             </div>
           </div>
         </div>
 
+        {/* ASOSIY */}
         {tab === 'asosiy' && (
           <>
             {!profile ? (
-              <form onSubmit={handleSaveProfile} className={`${card} space-y-2.5`}>
-                <h3 className="text-xs font-bold text-teal-400 text-center">Xodim profilini kiriting</h3>
+              <form onSubmit={handleSaveProfile} className={`${glass} p-5 space-y-3`}>
+                <div className="text-center">
+                  <div className="text-2xl">👋</div>
+                  <h3 className="text-base font-bold">Xush kelibsiz!</h3>
+                  <p className="text-xs text-slate-400">Boshlash uchun profilingizni to'ldiring</p>
+                </div>
                 <input
-                  className={`${input} font-mono`}
+                  className={`${field} font-mono`}
                   maxLength={14}
                   inputMode="numeric"
                   value={pinflInput}
                   onChange={(e) => setPinflInput(e.target.value.replace(/\D/g, ''))}
-                  placeholder="14 xonali JSHR..."
+                  placeholder="14 xonali JSHR"
                 />
-                <input className={input} value={nameInput} onChange={(e) => setNameInput(e.target.value)} placeholder="Ism Familiyangiz (F.I.O)" />
-                <select className={input} value={lavozimInput} onChange={(e) => setLavozimInput(e.target.value)}>
-                  <option>O'qituvchi</option>
-                  <option>ICHTU</option>
-                  <option>Ma'muriyat</option>
-                  <option>Xodim</option>
+                <input className={field} value={nameInput} onChange={(e) => setNameInput(e.target.value)} placeholder="Ism Familiya (F.I.O)" />
+                <select className={field} value={lavozimInput} onChange={(e) => setLavozimInput(e.target.value)}>
+                  <option className="text-black">O'qituvchi</option>
+                  <option className="text-black">ICHTU</option>
+                  <option className="text-black">Ma'muriyat</option>
+                  <option className="text-black">Xodim</option>
                 </select>
-                <button type="button" onClick={pickProfilePhoto} className="w-full py-2 bg-slate-800 rounded-xl text-xs font-bold">
-                  {photoInput ? '✅ Rasm olindi (qayta olish)' : '📸 Profil rasmini olish'}
+                <button
+                  type="button"
+                  onClick={pickProfilePhoto}
+                  className="w-full py-3 rounded-2xl border border-dashed border-teal-400/50 text-teal-300 text-sm font-semibold active:scale-95 transition"
+                >
+                  {photoInput ? '✅ Rasm olindi — qayta olish' : '📸 Profil rasmini olish'}
                 </button>
-                {photoInput && <img src={photoInput} alt="" className="w-20 h-20 rounded-2xl object-cover mx-auto" />}
-                <button type="submit" className="w-full py-2.5 bg-teal-600 hover:bg-teal-500 rounded-xl text-xs font-bold">
-                  Saqlash va Boshlash
+                {photoInput && <img src={photoInput} alt="" className="w-24 h-24 rounded-3xl object-cover mx-auto ring-2 ring-teal-400/60" />}
+                <button
+                  type="submit"
+                  className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-teal-500 to-emerald-500 text-slate-950 font-extrabold text-sm shadow-[0_8px_24px_rgba(20,184,166,0.35)] active:scale-95 transition"
+                >
+                  Saqlash va boshlash
                 </button>
               </form>
             ) : (
               <>
-                <div className={`${card} flex items-center justify-between`}>
-                  <div className="overflow-hidden pr-2">
-                    <h2 className="font-bold text-sm truncate">{profile.fullName}</h2>
-                    <p className="text-[11px] text-teal-400 font-mono">{profile.lavozimi} | {profile.pinfl}</p>
+                {/* Profil kartasi */}
+                <div className={`${glass} p-4 flex items-center gap-3`}>
+                  <div className="p-0.5 rounded-[1.1rem] bg-gradient-to-br from-teal-400 to-indigo-500">
+                    <Avatar src={profile.photoUrl} name={profile.fullName} size={56} />
                   </div>
-                  <img src={profile.photoUrl} alt="" className="w-14 h-14 rounded-2xl object-cover border-2 border-teal-400" />
+                  <div className="min-w-0 flex-1">
+                    <h2 className="font-bold text-base truncate">{profile.fullName}</h2>
+                    <div className="flex items-center gap-2 mt-1">
+                      <Badge tone="info">{profile.lavozimi}</Badge>
+                      <span className="text-[10px] text-slate-500 font-mono truncate">{profile.pinfl}</span>
+                    </div>
+                  </div>
                 </div>
 
-                <div className={`${card} space-y-1`}>
-                  <div className="flex justify-between text-xs">
-                    <span className={`font-bold ${inZone ? 'text-emerald-400' : 'text-rose-400'}`}>
-                      {inZone ? '● Davomat hududidasiz' : '● Hududdan tashqaridasiz'}
+                {/* Hudud kartasi */}
+                <div className={`${glass} p-4 space-y-3`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2.5 h-2.5 rounded-full ${inZone ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
+                      <span className={`text-sm font-bold ${inZone ? 'text-emerald-300' : 'text-rose-300'}`}>
+                        {distance === null ? 'GPS aniqlanmoqda...' : inZone ? 'Davomat hududidasiz' : 'Hududdan tashqaridasiz'}
+                      </span>
+                    </div>
+                    <span className="text-lg font-black font-mono text-white">
+                      {distance !== null ? (distance >= 1000 ? `${(distance / 1000).toFixed(1)} km` : `${distance} m`) : '—'}
                     </span>
-                    <span className="text-slate-400 font-mono">{distance !== null ? `${distance} m` : 'GPS...'}</span>
                   </div>
-                  {gpsError && <div className="text-[11px] text-amber-400">{gpsError}</div>}
-                  {!gpsError && !inZone && distance !== null && (
-                    <div className="text-[11px] text-slate-400">Davomat uchun {CONFIG.checkInRadiusMeters}m ichiga kiring.</div>
+                  <div className="h-2 rounded-full bg-white/10 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-700 ${inZone ? 'bg-gradient-to-r from-emerald-400 to-teal-400' : 'bg-gradient-to-r from-rose-500 to-orange-400'}`}
+                      style={{ width: `${proximity}%` }}
+                    />
+                  </div>
+                  {gpsError ? (
+                    <div className="text-[11px] text-amber-300">{gpsError}</div>
+                  ) : (
+                    !inZone &&
+                    distance !== null && (
+                      <div className="text-[11px] text-slate-400">Davomat uchun texnikum hududidagi {CONFIG.checkInRadiusMeters} m ichiga kiring.</div>
+                    )
                   )}
                 </div>
 
+                {/* Tugmalar */}
                 <div className="grid grid-cols-2 gap-3">
                   <button
                     disabled={busy}
                     onClick={() => handleAttendance('keldi')}
-                    className="py-4 bg-gradient-to-r from-emerald-600 to-teal-600 disabled:opacity-50 active:scale-95 rounded-2xl text-sm font-bold"
+                    className="relative overflow-hidden py-6 rounded-3xl bg-gradient-to-br from-emerald-500 to-teal-600 disabled:opacity-50 active:scale-95 transition shadow-[0_10px_30px_rgba(16,185,129,0.35)]"
                   >
-                    📸 Keldim
-                    <div className="text-[10px] font-normal text-emerald-100">Jonli rasm bilan</div>
+                    <div className="text-3xl">📸</div>
+                    <div className="text-base font-extrabold mt-1">Keldim</div>
+                    <div className="text-[10px] text-emerald-100/80">Jonli rasm bilan</div>
                   </button>
                   <button
                     disabled={busy}
                     onClick={() => handleAttendance('ketdi')}
-                    className="py-4 bg-gradient-to-r from-rose-600 to-orange-600 disabled:opacity-50 active:scale-95 rounded-2xl text-sm font-bold"
+                    className="relative overflow-hidden py-6 rounded-3xl bg-gradient-to-br from-rose-500 to-orange-500 disabled:opacity-50 active:scale-95 transition shadow-[0_10px_30px_rgba(244,63,94,0.35)]"
                   >
-                    📸 Ketdim
-                    <div className="text-[10px] font-normal text-rose-100">{isSat ? '13:00 dan keyin' : '16:00 dan keyin'}</div>
+                    <div className="text-3xl">📸</div>
+                    <div className="text-base font-extrabold mt-1">Ketdim</div>
+                    <div className="text-[10px] text-rose-100/80">{isSat ? '13:00 dan keyin' : '16:00 dan keyin'}</div>
                   </button>
                 </div>
 
+                {/* Bugungi holat */}
                 <div className="grid grid-cols-2 gap-3">
-                  <div className={card}>
-                    <div className="text-[10px] text-slate-400">Kirish</div>
-                    <div className="text-sm font-bold font-mono">{myIn ? myIn.timeOnly : '--:--'}</div>
-                    {myIn && (
-                      <div className={`text-[10px] font-bold ${myIn.late ? 'text-rose-400' : 'text-emerald-400'}`}>
-                        {myIn.late ? 'Kechikdingiz' : "O'z vaqtida"}
-                      </div>
-                    )}
+                  <div className={`${glass} p-4`}>
+                    <div className="flex items-center gap-2 text-[11px] text-slate-400 font-semibold">
+                      <span className="w-6 h-6 rounded-lg bg-emerald-500/15 text-emerald-300 flex items-center justify-center">↘</span>
+                      Kirish
+                    </div>
+                    <div className="text-2xl font-black font-mono mt-2">{myIn ? myIn.timeOnly : '--:--'}</div>
+                    {myIn && <div className="mt-1"><Badge tone={myIn.late ? 'late' : 'ok'}>{myIn.late ? 'Kechikdingiz' : "O'z vaqtida"}</Badge></div>}
                   </div>
-                  <div className={card}>
-                    <div className="text-[10px] text-slate-400">Chiqish</div>
-                    <div className="text-sm font-bold font-mono">{myOut ? myOut.timeOnly : '--:--'}</div>
+                  <div className={`${glass} p-4`}>
+                    <div className="flex items-center gap-2 text-[11px] text-slate-400 font-semibold">
+                      <span className="w-6 h-6 rounded-lg bg-rose-500/15 text-rose-300 flex items-center justify-center">↗</span>
+                      Chiqish
+                    </div>
+                    <div className="text-2xl font-black font-mono mt-2">{myOut ? myOut.timeOnly : '--:--'}</div>
                   </div>
                 </div>
               </>
@@ -649,14 +809,17 @@ export default function App() {
           </>
         )}
 
+        {/* PROFIL */}
         {tab === 'profil' && (
-          <div className={`${card} text-center space-y-3`}>
-            <h2 className="text-sm font-bold">Xodim profili</h2>
+          <div className={`${glass} p-6 text-center space-y-3`}>
             {profile ? (
               <>
-                <img src={profile.photoUrl} alt="" className="w-20 h-20 rounded-2xl object-cover mx-auto border-2 border-teal-400" />
-                <div className="font-bold text-sm">{profile.fullName}</div>
-                <div className="text-xs text-slate-400 font-mono">{profile.lavozimi} | {profile.pinfl}</div>
+                <div className="inline-block p-1 rounded-[1.6rem] bg-gradient-to-br from-teal-400 to-indigo-500">
+                  <Avatar src={profile.photoUrl} name={profile.fullName} size={96} />
+                </div>
+                <div className="font-extrabold text-lg">{profile.fullName}</div>
+                <div className="flex justify-center"><Badge tone="info">{profile.lavozimi}</Badge></div>
+                <div className="text-xs text-slate-400 font-mono">JSHR: {profile.pinfl}</div>
                 <button
                   onClick={() => {
                     if (window.confirm("Profilni o'zgartirasizmi?")) {
@@ -665,91 +828,140 @@ export default function App() {
                       setTab('asosiy');
                     }
                   }}
-                  className="px-4 py-2 bg-rose-600/20 text-rose-400 border border-rose-500/30 rounded-xl text-xs font-bold"
+                  className="px-5 py-2.5 rounded-2xl bg-rose-500/15 text-rose-300 ring-1 ring-rose-400/30 text-xs font-bold active:scale-95 transition"
                 >
                   Profilni yangilash
                 </button>
               </>
             ) : (
-              <p className="text-xs text-slate-400">Profil kiritilmagan.</p>
+              <p className="text-sm text-slate-400">Profil kiritilmagan.</p>
             )}
           </div>
         )}
 
+        {/* ADMIN */}
         {tab === 'admin' && (
-          <div className={`${card} space-y-4`}>
+          <div className="space-y-4">
             {!adminOk ? (
-              <form onSubmit={handleAdminLogin} className="space-y-3 max-w-xs mx-auto py-4">
-                <h2 className="text-sm font-bold text-center">Admin paneliga kirish</h2>
-                <input type="password" className={`${input} text-center font-mono`} value={pass} onChange={(e) => setPass(e.target.value)} placeholder="Parol..." />
-                <button className="w-full py-2.5 bg-rose-600 rounded-xl text-xs font-bold">Kirish</button>
+              <form onSubmit={handleAdminLogin} className={`${glass} p-6 space-y-3`}>
+                <div className="text-center">
+                  <div className="text-3xl">🛡️</div>
+                  <h2 className="text-base font-bold mt-1">Admin paneli</h2>
+                  <p className="text-xs text-slate-400">Davom etish uchun parolni kiriting</p>
+                </div>
+                <input type="password" className={`${field} text-center font-mono`} value={pass} onChange={(e) => setPass(e.target.value)} placeholder="••••" />
+                <button className="w-full py-3 rounded-2xl bg-gradient-to-r from-rose-500 to-orange-500 text-white font-extrabold text-sm active:scale-95 transition">
+                  Kirish
+                </button>
               </form>
             ) : (
               <>
-                <div className="flex justify-between items-center flex-wrap gap-2">
-                  <h2 className="text-sm font-bold">🛡️ Davomat jadvali</h2>
-                  <button onClick={() => setAdminOk(false)} className="px-3 py-1.5 bg-slate-800 text-xs rounded-xl">Chiqish</button>
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-extrabold">🛡️ Davomat paneli</h2>
+                  <button onClick={() => setAdminOk(false)} className="px-3 py-1.5 rounded-xl bg-white/10 text-xs font-semibold">
+                    Chiqish
+                  </button>
                 </div>
 
-                <div className="flex items-center gap-2 flex-wrap">
-                  <input type="date" className={`${input} !w-auto`} value={filterDate} onChange={(e) => { setFilterDate(e.target.value); setShowAll(false); }} />
-                  <label className="text-xs text-slate-300 flex items-center gap-1">
-                    <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> Hammasi
-                  </label>
+                {/* Ko'rsatkichlar */}
+                <div className="grid grid-cols-4 gap-2">
+                  {[
+                    ['Jami', stat.total, 'from-indigo-500/25 to-indigo-500/5 text-indigo-200'],
+                    ['Kelgan', stat.came, 'from-emerald-500/25 to-emerald-500/5 text-emerald-200'],
+                    ['Kechikkan', stat.late, 'from-amber-500/25 to-amber-500/5 text-amber-200'],
+                    ['Kelmagan', stat.absent, 'from-rose-500/25 to-rose-500/5 text-rose-200'],
+                  ].map(([label, val, cls]) => (
+                    <div key={label as string} className={`rounded-2xl p-3 text-center bg-gradient-to-b ring-1 ring-white/10 ${cls}`}>
+                      <div className="text-xl font-black font-mono">{val as number}</div>
+                      <div className="text-[9px] font-semibold opacity-80">{label as string}</div>
+                    </div>
+                  ))}
                 </div>
 
-                <div className="flex gap-2 flex-wrap">
-                  <button onClick={refresh} className="px-3 py-1.5 bg-indigo-600 text-xs rounded-xl">Yangilash</button>
-                  <button onClick={downloadCsv} className="px-3 py-1.5 bg-emerald-600 text-xs rounded-xl">⬇️ CSV yuklab olish</button>
-                  <button onClick={sendCsvToTelegram} className="px-3 py-1.5 bg-sky-600 text-xs rounded-xl">📨 Telegramga CSV</button>
-                  <button onClick={handleClear} className="px-3 py-1.5 bg-rose-600 text-xs rounded-xl">Tozalash</button>
+                {/* Filtr */}
+                <div className={`${glass} p-3 space-y-2.5`}>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="date"
+                      className={`${field} !py-2 !w-auto flex-1`}
+                      value={filterDate}
+                      onChange={(e) => {
+                        setFilterDate(e.target.value);
+                        setShowAll(false);
+                      }}
+                    />
+                    <button
+                      onClick={() => setShowAll(!showAll)}
+                      className={`px-4 py-2 rounded-2xl text-xs font-bold ring-1 transition ${showAll ? 'bg-teal-500 text-slate-950 ring-teal-300' : 'bg-white/5 text-slate-300 ring-white/10'}`}
+                    >
+                      Hammasi
+                    </button>
+                  </div>
+                  <input className={`${field} !py-2.5`} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="🔍 Xodim ismini qidiring..." />
                 </div>
 
-                <div className="overflow-x-auto">
-                  <table className="w-full text-[11px]">
-                    <thead>
-                      <tr className="text-slate-400 text-left border-b border-slate-800">
-                        <th className="py-1 pr-2">F.I.O</th>
-                        {showAll && <th className="pr-2">Sana</th>}
-                        <th className="pr-2">Keldi</th>
-                        <th className="pr-2">Ketdi</th>
-                        <th>Holat</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.length === 0 && (
-                        <tr><td colSpan={5} className="text-center text-slate-500 py-4">Yozuvlar yo'q</td></tr>
-                      )}
-                      {rows.map((r) => (
-                        <tr key={r.pinfl + r.dateKey} className="border-b border-slate-800/60">
-                          <td className="py-1.5 pr-2">
-                            <div className="font-bold">{r.name}</div>
-                            <div className="text-slate-500">{r.lavozimi}</div>
-                          </td>
-                          {showAll && <td className="pr-2 font-mono">{r.dateKey}</td>}
-                          <td className="pr-2 font-mono">{r.keldi || '--:--'}</td>
-                          <td className="pr-2 font-mono">{r.ketdi || '--:--'}</td>
-                          <td className={r.late || r.chiqdi ? 'text-rose-400' : 'text-emerald-400'}>
-                            {r.keldi ? (r.late ? 'Kechikdi' : "O'z vaqtida") : '-'}
-                            {r.chiqdi ? ` 🚨 ${r.chiqdi}` : ''}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                {/* Jadval */}
+                <div className={`${glass} overflow-hidden`}>
+                  <div className="grid grid-cols-[1fr_auto_auto] gap-3 px-4 py-2.5 text-[10px] uppercase tracking-wider text-slate-400 font-bold border-b border-white/10">
+                    <span>Xodim</span>
+                    <span className="w-12 text-center">Keldi</span>
+                    <span className="w-12 text-center">Ketdi</span>
+                  </div>
+                  {rows.length === 0 && <div className="text-center text-xs text-slate-500 py-8">Xodimlar topilmadi</div>}
+                  {rows.map((r) => (
+                    <div key={r.pinfl + r.dateKey} className="px-4 py-3 border-b border-white/5 last:border-0">
+                      <div className="grid grid-cols-[1fr_auto_auto] gap-3 items-center">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <Avatar src={r.photoUrl} name={r.name} size={38} />
+                          <div className="min-w-0">
+                            <div className="text-sm font-bold truncate">{r.name}</div>
+                            <div className="text-[10px] text-slate-500 truncate">
+                              {r.lavozimi}
+                              {showAll && r.dateKey !== '-' ? ` · ${r.dateKey}` : ''}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="w-12 text-center text-xs font-mono font-bold text-emerald-300">{r.keldi || '--:--'}</div>
+                        <div className="w-12 text-center text-xs font-mono font-bold text-rose-300">{r.ketdi || '--:--'}</div>
+                      </div>
+                      <div className="mt-1.5 ml-[46px] flex items-center gap-2">
+                        <Badge tone={r.absent ? 'absent' : r.late ? 'late' : 'ok'}>{statusOf(r)}</Badge>
+                        {r.chiqdi && <Badge tone="absent">🚨 Hududdan chiqdi {r.chiqdi}</Badge>}
+                      </div>
+                    </div>
+                  ))}
                 </div>
 
-                <div className="text-[10px] text-slate-500">
-                  Ro'yxatdan o'tgan xodimlar (shu telefonda): {users.length}. Barcha xodimlarning keldi/ketdi xabarlari
-                  Telegram admin botiga tushadi.
+                {/* Amallar */}
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={downloadCsv} className="py-3 rounded-2xl bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-400/30 text-xs font-bold active:scale-95 transition">
+                    ⬇️ CSV yuklab olish
+                  </button>
+                  <button onClick={sendCsvToTelegram} className="py-3 rounded-2xl bg-sky-500/15 text-sky-300 ring-1 ring-sky-400/30 text-xs font-bold active:scale-95 transition">
+                    📨 Telegramga CSV
+                  </button>
+                  <button onClick={refresh} className="py-3 rounded-2xl bg-indigo-500/15 text-indigo-300 ring-1 ring-indigo-400/30 text-xs font-bold active:scale-95 transition">
+                    🔄 Yangilash
+                  </button>
+                  <button onClick={handleClear} className="py-3 rounded-2xl bg-rose-500/15 text-rose-300 ring-1 ring-rose-400/30 text-xs font-bold active:scale-95 transition">
+                    🗑️ Tarixni tozalash
+                  </button>
                 </div>
+
+                <p className="text-[10px] text-slate-500 text-center px-4">
+                  Ro'yxatdagi xodimlar: {users.length} (shu telefonda ro'yxatdan o'tganlar). Barcha xodimlarning kelish-ketish xabarlari Telegram botga tushadi.
+                </p>
               </>
             )}
           </div>
         )}
       </div>
 
-      <nav className="fixed bottom-3 left-1/2 -translate-x-1/2 w-[92%] max-w-md bg-slate-900/95 border border-slate-800 px-3 py-2 rounded-3xl shadow-2xl z-50 flex justify-around">
+      {/* Pastki menyu */}
+      <nav
+        className="fixed left-1/2 -translate-x-1/2 w-[90%] max-w-sm z-50 bg-slate-900/80 backdrop-blur-2xl border border-white/10 rounded-[1.75rem] p-1.5 flex shadow-[0_12px_40px_rgba(0,0,0,0.5)]"
+        style={{ bottom: 'calc(12px + env(safe-area-inset-bottom))' }}
+      >
         {([
           ['asosiy', '🏠', 'Asosiy'],
           ['profil', '👤', 'Profil'],
@@ -757,14 +969,20 @@ export default function App() {
         ] as const).map(([id, icon, label]) => (
           <button
             key={id}
-            onClick={() => { setTab(id); if (id !== 'admin') setAdminOk(false); else refresh(); }}
-            className={`flex flex-col items-center px-5 py-1.5 rounded-2xl ${tab === id ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white' : 'text-slate-400'}`}
+            onClick={() => {
+              setTab(id);
+              if (id !== 'admin') setAdminOk(false);
+              else refresh();
+            }}
+            className={`flex-1 flex flex-col items-center py-2 rounded-[1.4rem] transition ${
+              tab === id ? 'bg-gradient-to-r from-teal-500 to-emerald-500 text-slate-950 shadow-lg' : 'text-slate-400'
+            }`}
           >
-            <span className="text-sm">{icon}</span>
-            <span className="text-[9px] font-bold">{label}</span>
+            <span className="text-lg leading-none">{icon}</span>
+            <span className="text-[10px] font-bold mt-0.5">{label}</span>
           </button>
         ))}
       </nav>
     </div>
   );
-      }
+}
