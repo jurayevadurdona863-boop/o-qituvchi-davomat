@@ -12,9 +12,11 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@capacitor-community/background-geolocation": "latest",
     "@capacitor/camera": "latest",
     "@capacitor/core": "latest",
     "@capacitor/geolocation": "latest",
+    "@capacitor/local-notifications": "latest",
     "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.3.3",
     "@types/canvas-confetti": "^1.9.0",
