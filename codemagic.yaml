@@ -5,6 +5,8 @@ workflows:
     instance_type: mac_mini_m1
     environment:
       java: 21
+      # Codemagic'da "telegram_secrets" guruhida bo'lishi kerak:
+      #   VITE_TELEGRAM_BOT_TOKEN, VITE_TELEGRAM_CHAT_IDS, VITE_ADMIN_PASSWORD, VITE_API_URL
       groups:
         - telegram_secrets
     scripts:
@@ -12,13 +14,21 @@ workflows:
         script: |
           npm install --legacy-peer-deps
           npm install -D @capacitor/cli @capacitor/core @capacitor/android --legacy-peer-deps
-          npm install @capacitor/geolocation @capacitor/camera --legacy-peer-deps
+          npm install @capacitor/geolocation @capacitor/camera @capacitor/local-notifications @capacitor-community/background-geolocation --legacy-peer-deps
       - name: Build web project
         script: |
           npm run build
       - name: Prepare Android Platform
         script: |
           rm -rf android
+          cat > capacitor.config.json <<'JSON'
+          {
+            "appId": "uz.texnikum.davomat",
+            "appName": "Davomat",
+            "webDir": "dist",
+            "android": { "useLegacyBridge": true }
+          }
+          JSON
           npx cap add android
           npx cap sync android
           python3 - <<'PY'
@@ -27,10 +37,16 @@ workflows:
               content = f.read()
           perms = [
               '<uses-permission android:name="android.permission.INTERNET" />',
+              '<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />',
               '<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />',
               '<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />',
+              '<uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />',
+              '<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />',
+              '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />',
+              '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
+              '<uses-permission android:name="android.permission.WAKE_LOCK" />',
               '<uses-permission android:name="android.permission.CAMERA" />',
-              '<uses-feature android:name="android.hardware.location.gps" />',
+              '<uses-feature android:name="android.hardware.location.gps" android:required="false" />',
               '<uses-feature android:name="android.hardware.camera" android:required="false" />',
           ]
           block = ""
