@@ -126,7 +126,7 @@ async function tgSend(chatId: string, text: string, photo?: string) {
 async function tgSendDocument(chatId: string, filename: string, content: string, caption: string) {
   const fd = new FormData();
   fd.append('chat_id', chatId);
-  fd.append('document', new Blob(['\uFEFF' + content], { type: 'text/csv' }), filename);
+  fd.append('document', new Blob(['﻿' + content], { type: 'text/csv' }), filename);
   fd.append('caption', caption);
   const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, { method: 'POST', body: fd });
   const j = await res.json();
@@ -833,7 +833,7 @@ export default function App() {
 
   function downloadCsv() {
     const csv = rowsToCsv(rows);
-    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -891,3 +891,375 @@ export default function App() {
     'w-full bg-white/[0.06] border border-white/10 rounded-2xl px-4 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-teal-400/70';
 
   return (
+    <div
+      className="min-h-screen text-slate-100 font-sans pb-32"
+      style={{
+        background:
+          'radial-gradient(900px 500px at 0% -5%, rgba(20,184,166,0.22), transparent 60%), radial-gradient(800px 500px at 100% 0%, rgba(99,102,241,0.22), transparent 60%), #050816',
+        paddingTop: 'env(safe-area-inset-top)',
+      }}
+    >
+      <div className="max-w-md mx-auto px-4 pt-5 space-y-4">
+        {/* Yuqori qism */}
+        <div className="flex items-start justify-between">
+          <div>
+            <div className="text-[11px] uppercase tracking-[0.2em] text-slate-400 font-semibold">Davomat</div>
+            <div className="text-5xl font-black tracking-tight font-mono bg-gradient-to-r from-white to-teal-200 bg-clip-text text-transparent">
+              {hhmm(clock)}
+            </div>
+            <div className="text-xs text-slate-400 capitalize mt-1">{dateLabel}</div>
+          </div>
+          <div className="text-right space-y-2">
+            <span
+              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold ring-1 ${
+                isOnline ? 'bg-emerald-500/15 text-emerald-300 ring-emerald-400/30' : 'bg-rose-500/15 text-rose-300 ring-rose-400/30'
+              }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
+              {isOnline ? 'ONLINE' : 'OFLAYN'}
+            </span>
+            <div className="text-[11px] text-slate-400">
+              Ish vaqti
+              <div className="text-sm font-bold text-teal-300 font-mono">{isSat ? '08:30 – 13:00' : '08:30 – 16:00'}</div>
+            </div>
+          </div>
+        </div>
+
+        {/* ASOSIY */}
+        {tab === 'asosiy' && (
+          <>
+            {!profile ? (
+              <form onSubmit={handleSaveProfile} className={`${glass} p-5 space-y-3`}>
+                <div className="text-center">
+                  <div className="text-2xl">👋</div>
+                  <h3 className="text-base font-bold">Xush kelibsiz!</h3>
+                  <p className="text-xs text-slate-400">Boshlash uchun profilingizni to'ldiring</p>
+                </div>
+                <input
+                  className={`${field} font-mono`}
+                  maxLength={14}
+                  inputMode="numeric"
+                  value={pinflInput}
+                  onChange={(e) => setPinflInput(e.target.value.replace(/\D/g, ''))}
+                  placeholder="14 xonali JSHR"
+                />
+                <input className={field} value={nameInput} onChange={(e) => setNameInput(e.target.value)} placeholder="Ism Familiya (F.I.O)" />
+                <select className={field} value={lavozimInput} onChange={(e) => setLavozimInput(e.target.value)}>
+                  <option className="text-black">O'qituvchi</option>
+                  <option className="text-black">ICHTU</option>
+                  <option className="text-black">Ma'muriyat</option>
+                  <option className="text-black">Xodim</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={pickProfilePhoto}
+                  className="w-full py-3 rounded-2xl border border-dashed border-teal-400/50 text-teal-300 text-sm font-semibold active:scale-95 transition"
+                >
+                  {photoInput ? '✅ Rasm olindi — qayta olish' : '📸 Profil rasmini olish'}
+                </button>
+                {photoInput && <img src={photoInput} alt="" className="w-24 h-24 rounded-3xl object-cover mx-auto ring-2 ring-teal-400/60" />}
+                <button
+                  type="submit"
+                  className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-teal-500 to-emerald-500 text-slate-950 font-extrabold text-sm shadow-[0_8px_24px_rgba(20,184,166,0.35)] active:scale-95 transition"
+                >
+                  Saqlash va boshlash
+                </button>
+              </form>
+            ) : (
+              <>
+                {/* Profil kartasi */}
+                <div className={`${glass} p-4 flex items-center gap-3`}>
+                  <div className="p-0.5 rounded-[1.1rem] bg-gradient-to-br from-teal-400 to-indigo-500">
+                    <Avatar src={profile.photoUrl} name={profile.fullName} size={56} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <h2 className="font-bold text-base truncate">{profile.fullName}</h2>
+                    <div className="flex items-center gap-2 mt-1">
+                      <Badge tone="info">{profile.lavozimi}</Badge>
+                      <span className="text-[10px] text-slate-500 font-mono truncate">{maskJshr(profile.pinfl)}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Hudud kartasi */}
+                <div className={`${glass} p-4 space-y-3`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2.5 h-2.5 rounded-full ${inZone ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
+                      <span className={`text-sm font-bold ${inZone ? 'text-emerald-300' : 'text-rose-300'}`}>
+                        {distance === null ? 'GPS aniqlanmoqda...' : inZone ? 'Davomat hududidasiz' : 'Hududdan tashqaridasiz'}
+                      </span>
+                    </div>
+                    <span className="text-lg font-black font-mono text-white">
+                      {distance !== null ? (distance >= 1000 ? `${(distance / 1000).toFixed(1)} km` : `${distance} m`) : '—'}
+                    </span>
+                  </div>
+                  <div className="h-2 rounded-full bg-white/10 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-700 ${inZone ? 'bg-gradient-to-r from-emerald-400 to-teal-400' : 'bg-gradient-to-r from-rose-500 to-orange-400'}`}
+                      style={{ width: `${proximity}%` }}
+                    />
+                  </div>
+                  {gpsError ? (
+                    <div className="text-[11px] text-amber-300">{gpsError}</div>
+                  ) : (
+                    !inZone &&
+                    distance !== null && (
+                      <div className="text-[11px] text-slate-400">Davomat uchun texnikum hududidagi {CONFIG.checkInRadiusMeters} m ichiga kiring.</div>
+                    )
+                  )}
+                </div>
+
+                {/* Tugmalar */}
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    disabled={busy}
+                    onClick={() => handleAttendance('keldi')}
+                    className="relative overflow-hidden py-6 rounded-3xl bg-gradient-to-br from-emerald-500 to-teal-600 disabled:opacity-50 active:scale-95 transition shadow-[0_10px_30px_rgba(16,185,129,0.35)]"
+                  >
+                    <div className="text-3xl">📸</div>
+                    <div className="text-base font-extrabold mt-1">Keldim</div>
+                    <div className="text-[10px] text-emerald-100/80">Jonli rasm bilan</div>
+                  </button>
+                  <button
+                    disabled={busy}
+                    onClick={() => handleAttendance('ketdi')}
+                    className="relative overflow-hidden py-6 rounded-3xl bg-gradient-to-br from-rose-500 to-orange-500 disabled:opacity-50 active:scale-95 transition shadow-[0_10px_30px_rgba(244,63,94,0.35)]"
+                  >
+                    <div className="text-3xl">📸</div>
+                    <div className="text-base font-extrabold mt-1">Ketdim</div>
+                    <div className="text-[10px] text-rose-100/80">{isSat ? '13:00 dan keyin' : '16:00 dan keyin'}</div>
+                  </button>
+                </div>
+
+                {/* Bugungi holat */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className={`${glass} p-4`}>
+                    <div className="flex items-center gap-2 text-[11px] text-slate-400 font-semibold">
+                      <span className="w-6 h-6 rounded-lg bg-emerald-500/15 text-emerald-300 flex items-center justify-center">↘</span>
+                      Kirish
+                    </div>
+                    <div className="text-2xl font-black font-mono mt-2">{myIn ? myIn.timeOnly : '--:--'}</div>
+                    {myIn && <div className="mt-1"><Badge tone={myIn.late ? 'late' : 'ok'}>{myIn.late ? 'Kechikdingiz' : "O'z vaqtida"}</Badge></div>}
+                  </div>
+                  <div className={`${glass} p-4`}>
+                    <div className="flex items-center gap-2 text-[11px] text-slate-400 font-semibold">
+                      <span className="w-6 h-6 rounded-lg bg-rose-500/15 text-rose-300 flex items-center justify-center">↗</span>
+                      Chiqish
+                    </div>
+                    <div className="text-2xl font-black font-mono mt-2">{myOut ? myOut.timeOnly : '--:--'}</div>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setTab('profil')}
+                  className="w-full py-3 rounded-2xl bg-amber-500/10 text-amber-300 ring-1 ring-amber-400/25 text-xs font-bold active:scale-95 transition"
+                >
+                  ⚙️ Fonda ishlashi uchun telefonni sozlang
+                </button>
+              </>
+            )}
+          </>
+        )}
+
+        {/* PROFIL */}
+        {tab === 'profil' && (
+          <div className="space-y-4">
+            <div className={`${glass} p-6 text-center space-y-3`}>
+              {profile ? (
+                <>
+                  <div className="inline-block p-1 rounded-[1.6rem] bg-gradient-to-br from-teal-400 to-indigo-500">
+                    <Avatar src={profile.photoUrl} name={profile.fullName} size={96} />
+                  </div>
+                  <div className="font-extrabold text-lg">{profile.fullName}</div>
+                  <div className="flex justify-center"><Badge tone="info">{profile.lavozimi}</Badge></div>
+                  <div className="text-xs text-slate-400 font-mono">JSHR: {maskJshr(profile.pinfl)}</div>
+                  <button
+                    onClick={() => {
+                      if (window.confirm("Profilni o'zgartirasizmi?")) {
+                        localStorage.removeItem('user_profile');
+                        setProfile(null);
+                        setTab('asosiy');
+                      }
+                    }}
+                    className="px-5 py-2.5 rounded-2xl bg-rose-500/15 text-rose-300 ring-1 ring-rose-400/30 text-xs font-bold active:scale-95 transition"
+                  >
+                    Profilni yangilash
+                  </button>
+                </>
+              ) : (
+                <p className="text-sm text-slate-400">Profil kiritilmagan.</p>
+              )}
+            </div>
+            <DeviceGuide />
+          </div>
+        )}
+
+        {/* ADMIN */}
+        {tab === 'admin' && (
+          <div className="space-y-4">
+            {!adminOk ? (
+              <form onSubmit={handleAdminLogin} className={`${glass} p-6 space-y-3`}>
+                <div className="text-center">
+                  <div className="text-3xl">🛡️</div>
+                  <h2 className="text-base font-bold mt-1">Admin paneli</h2>
+                  <p className="text-xs text-slate-400">Davom etish uchun parolni kiriting</p>
+                </div>
+                <input type="password" className={`${field} text-center font-mono`} value={pass} onChange={(e) => setPass(e.target.value)} placeholder="••••" />
+                <button className="w-full py-3 rounded-2xl bg-gradient-to-r from-rose-500 to-orange-500 text-white font-extrabold text-sm active:scale-95 transition">
+                  Kirish
+                </button>
+              </form>
+            ) : (
+              <>
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-extrabold">🛡️ Davomat paneli</h2>
+                  <button onClick={() => setAdminOk(false)} className="px-3 py-1.5 rounded-xl bg-white/10 text-xs font-semibold">
+                    Chiqish
+                  </button>
+                </div>
+
+                {API && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <a
+                      href={`${API}/monitor`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="py-3.5 rounded-2xl bg-gradient-to-r from-indigo-500 to-sky-500 text-white font-extrabold text-xs text-center active:scale-95 transition"
+                    >
+                      🌐 Jonli nazorat
+                    </a>
+                    <a
+                      href={`${API}/admin/employees`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="py-3.5 rounded-2xl bg-gradient-to-r from-teal-500 to-emerald-500 text-slate-950 font-extrabold text-xs text-center active:scale-95 transition"
+                    >
+                      👥 Xodimlar
+                    </a>
+                  </div>
+                )}
+
+                {/* Ko'rsatkichlar */}
+                <div className="grid grid-cols-4 gap-2">
+                  {[
+                    ['Jami', stat.total, 'from-indigo-500/25 to-indigo-500/5 text-indigo-200'],
+                    ['Kelgan', stat.came, 'from-emerald-500/25 to-emerald-500/5 text-emerald-200'],
+                    ['Kechikkan', stat.late, 'from-amber-500/25 to-amber-500/5 text-amber-200'],
+                    ['Kelmagan', stat.absent, 'from-rose-500/25 to-rose-500/5 text-rose-200'],
+                  ].map(([label, val, cls]) => (
+                    <div key={label as string} className={`rounded-2xl p-3 text-center bg-gradient-to-b ring-1 ring-white/10 ${cls}`}>
+                      <div className="text-xl font-black font-mono">{val as number}</div>
+                      <div className="text-[9px] font-semibold opacity-80">{label as string}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Filtr */}
+                <div className={`${glass} p-3 space-y-2.5`}>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="date"
+                      className={`${field} !py-2 !w-auto flex-1`}
+                      value={filterDate}
+                      onChange={(e) => {
+                        setFilterDate(e.target.value);
+                        setShowAll(false);
+                      }}
+                    />
+                    <button
+                      onClick={() => setShowAll(!showAll)}
+                      className={`px-4 py-2 rounded-2xl text-xs font-bold ring-1 transition ${showAll ? 'bg-teal-500 text-slate-950 ring-teal-300' : 'bg-white/5 text-slate-300 ring-white/10'}`}
+                    >
+                      Hammasi
+                    </button>
+                  </div>
+                  <input className={`${field} !py-2.5`} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="🔍 Xodim ismini qidiring..." />
+                </div>
+
+                {/* Jadval */}
+                <div className={`${glass} overflow-hidden`}>
+                  <div className="grid grid-cols-[1fr_auto_auto] gap-3 px-4 py-2.5 text-[10px] uppercase tracking-wider text-slate-400 font-bold border-b border-white/10">
+                    <span>Xodim</span>
+                    <span className="w-12 text-center">Keldi</span>
+                    <span className="w-12 text-center">Ketdi</span>
+                  </div>
+                  {rows.length === 0 && <div className="text-center text-xs text-slate-500 py-8">Xodimlar topilmadi</div>}
+                  {rows.map((r) => (
+                    <div key={r.pinfl + r.dateKey} className="px-4 py-3 border-b border-white/5 last:border-0">
+                      <div className="grid grid-cols-[1fr_auto_auto] gap-3 items-center">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <Avatar src={r.photoUrl} name={r.name} size={38} />
+                          <div className="min-w-0">
+                            <div className="text-sm font-bold truncate">{r.name}</div>
+                            <div className="text-[10px] text-slate-500 truncate">
+                              {r.lavozimi}
+                              {showAll && r.dateKey !== '-' ? ` · ${r.dateKey}` : ''}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="w-12 text-center text-xs font-mono font-bold text-emerald-300">{r.keldi || '--:--'}</div>
+                        <div className="w-12 text-center text-xs font-mono font-bold text-rose-300">{r.ketdi || '--:--'}</div>
+                      </div>
+                      <div className="mt-1.5 ml-[46px] flex items-center gap-2">
+                        <Badge tone={r.absent ? 'absent' : r.late ? 'late' : 'ok'}>{statusOf(r)}</Badge>
+                        {r.chiqdi && <Badge tone="absent">🚨 Hududdan chiqdi {r.chiqdi}</Badge>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Amallar */}
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={downloadCsv} className="py-3 rounded-2xl bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-400/30 text-xs font-bold active:scale-95 transition">
+                    ⬇️ CSV yuklab olish
+                  </button>
+                  <button onClick={sendCsvToTelegram} className="py-3 rounded-2xl bg-sky-500/15 text-sky-300 ring-1 ring-sky-400/30 text-xs font-bold active:scale-95 transition">
+                    📨 Telegramga CSV
+                  </button>
+                  <button onClick={refresh} className="py-3 rounded-2xl bg-indigo-500/15 text-indigo-300 ring-1 ring-indigo-400/30 text-xs font-bold active:scale-95 transition">
+                    🔄 Yangilash
+                  </button>
+                  <button onClick={handleClear} className="py-3 rounded-2xl bg-rose-500/15 text-rose-300 ring-1 ring-rose-400/30 text-xs font-bold active:scale-95 transition">
+                    🗑️ Tarixni tozalash
+                  </button>
+                </div>
+
+                <p className="text-[10px] text-slate-500 text-center px-4">
+                  Ushbu jadval faqat shu telefondagi ma'lumotlarni ko'rsatadi. Barcha xodimlar uchun yuqoridagi «Jonli nazorat» tugmasini bosing.
+                </p>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Pastki menyu */}
+      <nav
+        className="fixed left-1/2 -translate-x-1/2 w-[90%] max-w-sm z-50 bg-slate-900/80 backdrop-blur-2xl border border-white/10 rounded-[1.75rem] p-1.5 flex shadow-[0_12px_40px_rgba(0,0,0,0.5)]"
+        style={{ bottom: 'calc(12px + env(safe-area-inset-bottom))' }}
+      >
+        {([
+          ['asosiy', '🏠', 'Asosiy'],
+          ['profil', '👤', 'Profil'],
+          ['admin', '🛡️', 'Admin'],
+        ] as const).map(([id, icon, label]) => (
+          <button
+            key={id}
+            onClick={() => {
+              setTab(id);
+              if (id !== 'admin') setAdminOk(false);
+              else refresh();
+            }}
+            className={`flex-1 flex flex-col items-center py-2 rounded-[1.4rem] transition ${
+              tab === id ? 'bg-gradient-to-r from-teal-500 to-emerald-500 text-slate-950 shadow-lg' : 'text-slate-400'
+            }`}
+          >
+            <span className="text-lg leading-none">{icon}</span>
+            <span className="text-[10px] font-bold mt-0.5">{label}</span>
+          </button>
+        ))}
+      </nav>
+    </div>
+  );
+}
