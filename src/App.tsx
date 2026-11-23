@@ -225,6 +225,34 @@ function sendPing() {
     .catch(() => {});
 }
 
+/** Har kuni eslatma: 08:20 «Keldim», ish tugaganda «Ketdim» (dushanba–shanba; yakshanba yo'q). */
+async function scheduleReminders() {
+  try {
+    const ids = Array.from({ length: 12 }, (_, i) => ({ id: 9100 + i }));
+    await LocalNotifications.cancel({ notifications: ids });
+    const items: any[] = [];
+    let n = 0;
+    // Capacitor: weekday 1 = yakshanba, 2 = dushanba ... 7 = shanba
+    for (const wd of [2, 3, 4, 5, 6, 7]) {
+      items.push({
+        id: 9100 + n++,
+        title: '⏰ Davomat vaqti',
+        body: '«Keldim» tugmasini bosishni unutmang',
+        schedule: { on: { weekday: wd, hour: 8, minute: 20 }, allowWhileIdle: true },
+      });
+      items.push({
+        id: 9100 + n++,
+        title: '🏁 Ish vaqti tugadi',
+        body: '«Ketdim» tugmasini bosishni unutmang',
+        schedule: { on: { weekday: wd, hour: wd === 7 ? 13 : 16, minute: 0 }, allowWhileIdle: true },
+      });
+    }
+    await LocalNotifications.schedule({ notifications: items });
+  } catch {
+    /* eslatma qo'yilmasa ham asosiy ish davom etadi */
+  }
+}
+
 /** GPS yangilanganda chaqiriladi; server har daqiqada signal oladi. */
 function pingServer(jshr: string | undefined, lat: number, lng: number, acc?: number) {
   if (!API || !jshr) return;
@@ -615,6 +643,7 @@ export default function App() {
         } catch {
           /* ruxsat berilmasa ham GPS ishlayveradi */
         }
+        void scheduleReminders();
         try {
           const id: string = await BackgroundGeolocation.addWatcher(
             {
