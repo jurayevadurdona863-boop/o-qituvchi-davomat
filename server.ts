@@ -1,6 +1,8 @@
 import express, { type Express, type Request, type Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
 import { SEED_EMPLOYEES } from './employees.js';
@@ -9,7 +11,53 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // SQLite bazasi (doimiy disk ulangan bo'lsa, DB_PATH=/data/attendance.db qiling)
-const db = new Database(process.env.DB_PATH || 'attendance.db');
+const DB_FILE = process.env.DB_PATH || 'attendance.db';
+
+// ====== TELEGRAMDAN TIKLASH ======
+// Bepul Render'da fayllar har restartda o'chadi. Baza fayli bo'lmasa, Telegramda
+// "pin" qilingan oxirgi zaxira faylini topib, qayta yuklab olamiz.
+let restoreUncertain = false;
+async function restoreDbFromTelegram() {
+  const token = process.env.TELEGRAM_BOT_TOKEN || '';
+  const chats = (process.env.TELEGRAM_CHAT_IDS || '').split(',').map((x) => x.trim()).filter(Boolean);
+  if (fs.existsSync(DB_FILE) || !token || chats.length === 0) return;
+  const api = `https://api.telegram.org/bot${token}`;
+  for (const chatId of chats) {
+    try {
+      const c: any = await (await fetch(`${api}/getChat?chat_id=${encodeURIComponent(chatId)}`)).json();
+      if (!c.ok) {
+        console.error(`Zaxira: getChat xato (${chatId}):`, c.description);
+        restoreUncertain = true;
+        continue;
+      }
+      const doc = c.result?.pinned_message?.document;
+      if (!doc || !String(doc.file_name || '').startsWith('attendance-backup')) continue;
+      const f: any = await (await fetch(`${api}/getFile?file_id=${encodeURIComponent(doc.file_id)}`)).json();
+      if (!f.ok) {
+        restoreUncertain = true;
+        continue;
+      }
+      const r = await fetch(`https://api.telegram.org/file/bot${token}/${f.result.file_path}`);
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (buf.subarray(0, 15).toString('latin1') !== 'SQLite format 3') {
+        console.error('Zaxira fayli yaroqsiz, o\'tkazib yuborildi');
+        continue;
+      }
+      fs.mkdirSync(path.dirname(path.resolve(DB_FILE)), { recursive: true });
+      fs.writeFileSync(DB_FILE, buf);
+      console.log(`✅ Baza Telegramdagi zaxiradan tiklandi (${buf.length} bayt)`);
+      restoreUncertain = false;
+      return;
+    } catch (e) {
+      console.error('Zaxirani tiklashda xato:', e);
+      restoreUncertain = true;
+    }
+  }
+  console.log('Telegramda zaxira topilmadi, bo\'sh baza bilan boshlanadi');
+}
+await restoreDbFromTelegram();
+
+const db = new Database(DB_FILE);
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS attendance (
@@ -133,6 +181,78 @@ async function sendTelegramNotification(message: string) {
       console.error(`Telegram xabar yuborishda xatolik (${chatId}):`, err);
     }
   }
+}
+
+// ====== TELEGRAMGA ZAXIRA ======
+let backupBusy = false;
+let backupTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function backupDbToTelegram(reason: string) {
+  if (!TELEGRAM_BOT_TOKEN || TELEGRAM_CHAT_IDS.length === 0) return;
+  if (restoreUncertain) {
+    console.error("Zaxira o'tkazib yuborildi: tiklash holati noaniq (eski zaxira ustiga yozmaslik uchun)");
+    return;
+  }
+  if (backupBusy) {
+    scheduleBackup(reason, 30000);
+    return;
+  }
+  backupBusy = true;
+  const api = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
+  const chatId = process.env.BACKUP_CHAT_ID || TELEGRAM_CHAT_IDS[0];
+  const tmp = path.join(os.tmpdir(), `attendance-backup-${Date.now()}.db`);
+  try {
+    await db.backup(tmp);
+    const buf = fs.readFileSync(tmp);
+    const tn = getTashkentTimeDetails();
+    const name = `attendance-backup-${tn.dateStr.replace(/\./g, '-')}_${tn.timeStr.replace(':', '-')}.db`;
+
+    // eski pin xabarini eslab qolamiz (keyin olib tashlaymiz)
+    let oldPinId: number | null = null;
+    try {
+      const c: any = await (await fetch(`${api}/getChat?chat_id=${encodeURIComponent(chatId)}`)).json();
+      oldPinId = c.result?.pinned_message?.message_id ?? null;
+    } catch {}
+
+    const form = new FormData();
+    form.append('chat_id', chatId);
+    form.append('disable_notification', 'true');
+    form.append('caption', `💾 Baza zaxirasi (${reason}) — o'chirmang`);
+    form.append('document', new Blob([buf]), name);
+    const j: any = await (await fetch(`${api}/sendDocument`, { method: 'POST', body: form })).json();
+    if (!j.ok) {
+      console.error('Zaxira yuborilmadi:', j.description);
+      return;
+    }
+    const newId = j.result.message_id;
+    await fetch(`${api}/pinChatMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, message_id: newId, disable_notification: true }),
+    });
+    if (oldPinId && oldPinId !== newId) {
+      await fetch(`${api}/unpinChatMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, message_id: oldPinId }),
+      });
+    }
+    console.log(`💾 Zaxira yuborildi (${reason}, ${buf.length} bayt)`);
+  } catch (e) {
+    console.error('Zaxira xatosi:', e);
+  } finally {
+    try { fs.rmSync(tmp, { force: true }); } catch {}
+    backupBusy = false;
+  }
+}
+
+// Ketma-ket o'zgarishlarni bitta zaxiraga birlashtiradi
+function scheduleBackup(reason: string, delayMs = 90000) {
+  if (backupTimer) clearTimeout(backupTimer);
+  backupTimer = setTimeout(() => {
+    backupTimer = null;
+    void backupDbToTelegram(reason);
+  }, delayMs);
 }
 
 // Masofani hisoblash (Haversine)
@@ -567,6 +687,7 @@ ${msg ? `<div class="msg">${esc(msg)}</div>` : ''}
     } else {
       db.prepare('INSERT INTO employees (jshr, fio, lavozim) VALUES (?, ?, ?)').run(jshr, fio, lavozim);
     }
+    scheduleBackup('xodim');
     void sendTelegramNotification(
       `➕ <b>Yangi xodim qo'shildi</b>\n\n👤 ${esc(fio)}\n💼 ${esc(lavozim)}\n🆔 ${maskJshr(jshr)}`
     );
@@ -580,6 +701,7 @@ ${msg ? `<div class="msg">${esc(msg)}</div>` : ''}
     let m = 'Xodim topilmadi.';
     if (ex) {
       db.prepare('UPDATE employees SET active = 0 WHERE id = ?').run(id);
+      scheduleBackup('xodim');
       void sendTelegramNotification(`➖ <b>Xodim ro'yxatdan o'chirildi</b>\n\n👤 ${esc(ex.fio)}`);
       m = `O'chirildi: ${ex.fio}`;
     }
@@ -711,6 +833,7 @@ ${msg ? `<div class="msg">${esc(msg)}</div>` : ''}
       (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1',
       synced_from_offline ? 1 : 0
     );
+    scheduleBackup('davomat');
 
     const actionEmoji = normalizedAction === 'Keldi' ? '🟢' : '🔴';
     const geoText = withinGeofence ? '✅ Kollej hududida' : '❌ Hududdan tashqarida';
@@ -849,6 +972,8 @@ ${msg ? `<div class="msg">${esc(msg)}</div>` : ''}
       teachers_loaded: getTeachers().length,
       total_saved_records: countRow.cnt,
       database: 'SQLite',
+      db_path: DB_FILE,
+      telegram_backup: !!TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_IDS.length > 0,
       work_hours: 'Mon-Fri: 08:30-16:00, Sat: 08:30-13:00',
       telegram_configured: !!TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_IDS.length > 0,
       timestamp: new Date().toISOString(),
@@ -871,6 +996,9 @@ ${msg ? `<div class="msg">${esc(msg)}</div>` : ''}
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running at http://0.0.0.0:${PORT}`);
   });
+
+  // Har 3 soatda zaxira (o'zgarish bo'lmasa ham)
+  setInterval(() => void backupDbToTelegram('davriy'), 3 * 60 * 60 * 1000);
 }
 
 startServer();
