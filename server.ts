@@ -307,6 +307,7 @@ function registerMonitoring(
       kind TEXT, left_ts INTEGER, back_ts INTEGER, max_distance REAL
     );
     CREATE TABLE IF NOT EXISTS daily_reports (date_str TEXT PRIMARY KEY, sent_ts INTEGER);
+    CREATE TABLE IF NOT EXISTS reports_sent (date_str TEXT, kind TEXT, sent_ts INTEGER, PRIMARY KEY (date_str, kind));
   `);
   db.exec(`
     CREATE TABLE IF NOT EXISTS first_seen (jshr TEXT PRIMARY KEY, ts INTEGER);
@@ -566,21 +567,78 @@ td{padding:9px 8px;border-bottom:1px solid #0f172a;vertical-align:top}
     if (buf.trim()) await notify(buf);
   }
 
-  async function sendDailyReport(tn: ReturnType<typeof tashkentNow>) {
-    const rows = buildToday(tn.dateStr, endTsToday(tn));
-    const came = rows.filter((r) => r.keldi);
+  const byTime = (x: string, y: string) => (x || '99:99').localeCompare(y || '99:99');
+
+  // 08:40 — ertalabki davomat
+  async function sendMorningReport(tn: ReturnType<typeof tashkentNow>, late = false) {
+    const rows = buildToday(tn.dateStr);
+    const came = rows.filter((r) => r.keldi).sort((a, b) => byTime(a.keldi, b.keldi));
     const absent = rows.filter((r) => !r.keldi);
-    const late = came.filter((r) => r.late);
+    const lines = [
+      `🌅 <b>ERTALABKI DAVOMAT — ${tn.dateStr}</b>`,
+      '',
+      `Jami: ${rows.length} · Kelgan: ${came.length} · Kelmagan: ${absent.length}`,
+      '',
+    ];
+    if (came.length) {
+      lines.push(`✅ <b>Kelganlar (${came.length}):</b>`);
+      came.forEach((r) => lines.push(`• ${esc(r.fio)} — ${r.keldi}${r.late ? ' ⚠️ ' + esc(r.timeStatus) : ''}`));
+      lines.push('');
+    }
+    if (absent.length) {
+      lines.push(`❌ <b>Kelmaganlar (${absent.length}):</b>`);
+      absent.forEach((r) => lines.push(`• ${esc(r.fio)}`));
+    }
+    await sendChunks(late ? [lines[0], '⚠️ <i>Kechikib yuborildi — hisobot vaqtida server ishlamagan edi</i>', ...lines.slice(1)] : lines);
+  }
+
+  // ish tugaganidan 30 daqiqa keyin (16:30) — ketganlar
+  async function sendLeaveReport(tn: ReturnType<typeof tashkentNow>, late = false) {
+    const rows = buildToday(tn.dateStr, endTsToday(tn));
+    const left = rows.filter((r) => r.ketdi).sort((a, b) => byTime(a.ketdi, b.ketdi));
+    const stay = rows.filter((r) => r.keldi && !r.ketdi);
+    const lines = [
+      `🏁 <b>KETISH HISOBOTI — ${tn.dateStr}</b>`,
+      '',
+      `Ketganlar: ${left.length} · «Ketdim» bosmaganlar: ${stay.length}`,
+      '',
+    ];
+    if (left.length) {
+      lines.push(`🔴 <b>Ketganlar (${left.length}):</b>`);
+      left.forEach((r) => lines.push(`• ${esc(r.fio)} — ${r.ketdi}`));
+      lines.push('');
+    }
+    if (stay.length) {
+      lines.push(`❓ <b>«Ketdim» bosmaganlar (${stay.length}):</b>`);
+      stay.forEach((r) => lines.push(`• ${esc(r.fio)} — keldi ${r.keldi}`));
+    }
+    await sendChunks(late ? [lines[0], '⚠️ <i>Kechikib yuborildi — hisobot vaqtida server ishlamagan edi</i>', ...lines.slice(1)] : lines);
+  }
+
+  // ish tugaganidan 60 daqiqa keyin (17:00) — hammasi bitta ro'yxatda
+  async function sendDailyReport(tn: ReturnType<typeof tashkentNow>, late = false) {
+    const rows = buildToday(tn.dateStr, endTsToday(tn));
+    const came = rows.filter((r) => r.keldi).sort((a, b) => byTime(a.keldi, b.keldi));
+    const absent = rows.filter((r) => !r.keldi);
     const noOut = came.filter((r) => !r.ketdi);
     const outs = rows.filter((r) => r.outCount > 0);
     const sig = rows.filter((r) => r.signalCount > 0);
 
     const lines = [
-      `📊 <b>KUNLIK NAZORAT HISOBOTI — ${tn.dateStr}</b>`,
+      `📋 <b>KUNLIK YAKUNIY HISOBOT — ${tn.dateStr}</b>`,
       '',
-      `Jami: ${rows.length} · Kelgan: ${came.length} · Kelmagan: ${absent.length}`,
+      `Jami: ${rows.length} · Kelgan: ${came.length} · Kelmagan: ${absent.length} · «Ketdim» bosmagan: ${noOut.length}`,
       '',
     ];
+    if (came.length) {
+      lines.push(`✅ <b>Davomat (keldi → ketdi):</b>`);
+      came.forEach((r, i) =>
+        lines.push(`${i + 1}. ${esc(r.fio)} — ${r.keldi} → ${r.ketdi || '❓'}${r.late ? ' ⚠️' : ''}`)
+      );
+      lines.push('');
+      lines.push('⚠️ — kechikkan · ❓ — «Ketdim» bosilmagan');
+      lines.push('');
+    }
     if (outs.length) {
       lines.push(`🚨 <b>Ish vaqtida hududdan chiqqanlar (${outs.length}):</b>`);
       outs.forEach((r) => lines.push(`• ${esc(r.fio)} — ${r.outCount} marta, jami ${r.outMin} daq. (maks. ${r.outMax} m)`));
@@ -591,21 +649,11 @@ td{padding:9px 8px;border-bottom:1px solid #0f172a;vertical-align:top}
       sig.forEach((r) => lines.push(`• ${esc(r.fio)} — ${r.signalCount} marta`));
       lines.push('');
     }
-    if (late.length) {
-      lines.push(`⚠️ <b>Kechikkanlar (${late.length}):</b>`);
-      late.forEach((r) => lines.push(`• ${esc(r.fio)} — ${r.keldi} (${esc(r.timeStatus)})`));
-      lines.push('');
-    }
-    if (noOut.length) {
-      lines.push(`❓ <b>«Ketdim» bosmaganlar (${noOut.length}):</b>`);
-      noOut.forEach((r) => lines.push(`• ${esc(r.fio)}`));
-      lines.push('');
-    }
     if (absent.length) {
       lines.push(`❌ <b>Kelmaganlar (${absent.length}):</b>`);
       absent.forEach((r) => lines.push(`• ${esc(r.fio)}`));
     }
-    await sendChunks(lines);
+    await sendChunks(late ? [lines[0], '⚠️ <i>Kechikib yuborildi — hisobot vaqtida server ishlamagan edi</i>', ...lines.slice(1)] : lines);
   }
 
   // ====== HAR DAQIQADA TEKSHIRUV ======
@@ -615,14 +663,28 @@ td{padding:9px 8px;border-bottom:1px solid #0f172a;vertical-align:top}
     if (end === null) return;
     const now = Date.now();
 
-    if (tn.total >= end + 30) {
-      const done = db.prepare('SELECT 1 FROM daily_reports WHERE date_str = ?').get(tn.dateStr);
-      if (!done) {
-        db.prepare('INSERT INTO daily_reports (date_str, sent_ts) VALUES (?, ?)').run(tn.dateStr, now);
-        void sendDailyReport(tn);
+    // Hisobotlar jadvali (har biri kuniga bir marta; kech qayta ishga tushsa takror yuborilmaydi)
+    const sendOnce = (kind: string, from: number, lateUntil: number, fn: (late: boolean) => Promise<void>) => {
+      if (tn.total < from || tn.total > lateUntil) return;
+      const done = db.prepare('SELECT 1 FROM reports_sent WHERE date_str = ? AND kind = ?').get(tn.dateStr, kind);
+      if (done) return;
+      db.prepare('INSERT INTO reports_sent (date_str, kind, sent_ts) VALUES (?, ?, ?)').run(tn.dateStr, kind, now);
+      const late = tn.total > from + 90;
+      if (late) {
+        // Kechikib yuborishdan oldin ma'lumot ishonchli ekanini tekshiramiz (baza o'chib ketgan bo'lsa, yolg'on hisobot yubormaymiz)
+        const c = db.prepare('SELECT COUNT(*) AS c FROM attendance WHERE date_str = ?').get(tn.dateStr) as { c: number };
+        if (restoreUncertain || c.c === 0) {
+          console.error(`Kechikkan hisobot (${kind}) o'tkazib yuborildi: bugungi ma'lumot ishonchsiz`);
+          return;
+        }
       }
-      return;
-    }
+      scheduleBackup('hisobot', 30000);
+      void fn(late);
+    };
+    sendOnce('morning', 8 * 60 + 40, end, (late) => sendMorningReport(tn, late)); // 08:40
+    sendOnce('leave', end + 30, 23 * 60 + 55, (late) => sendLeaveReport(tn, late)); // 16:30 (shanba 13:30)
+    sendOnce('final', end + 60, 23 * 60 + 55, (late) => sendDailyReport(tn, late)); // 17:00 (shanba 14:00)
+
     if (tn.total < WORK_START || tn.total > end) return;
 
     const ins = db
@@ -1051,6 +1113,9 @@ ${msg ? `<div class="msg">${esc(msg)}</div>` : ''}
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running at http://0.0.0.0:${PORT}`);
   });
+
+  // Ishga tushgandan 2 daqiqa keyin birinchi zaxira (pin qilingan fayl bo'lishi uchun)
+  scheduleBackup('start', 120000);
 
   // Har 3 soatda zaxira (o'zgarish bo'lmasa ham)
   setInterval(() => void backupDbToTelegram('davriy'), 3 * 60 * 60 * 1000);
