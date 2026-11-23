@@ -308,6 +308,14 @@ function registerMonitoring(
     );
     CREATE TABLE IF NOT EXISTS daily_reports (date_str TEXT PRIMARY KEY, sent_ts INTEGER);
   `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS first_seen (jshr TEXT PRIMARY KEY, ts INTEGER);
+    INSERT OR IGNORE INTO first_seen (jshr, ts) SELECT jshr, ts FROM last_seen;
+    INSERT OR IGNORE INTO first_seen (jshr, ts)
+      SELECT jshr, CAST(strftime('%s', MIN(server_timestamp)) AS INTEGER) * 1000 FROM attendance
+      WHERE server_timestamp IS NOT NULL GROUP BY jshr HAVING strftime('%s', MIN(server_timestamp)) IS NOT NULL;
+  `);
+  const insFirst = db.prepare('INSERT OR IGNORE INTO first_seen (jshr, ts) VALUES (?, ?)');
 
   const findTeacher = (jshr: string) => teachersOf().find((t) => t.jshr === jshr);
   const strikes = new Map<string, number>();
@@ -345,6 +353,7 @@ function registerMonitoring(
     const tn = tashkentNow();
     const dist = Math.round(calculateDistanceMeters(COLLEGE_LAT, COLLEGE_LNG, lat, lng));
     upsertSeen.run(t.jshr, now, lat, lng, dist, Number.isFinite(acc) ? acc : null);
+    insFirst.run(t.jshr, now);
 
     let open = getOpen.get(t.jshr) as Exc | undefined;
 
@@ -491,11 +500,56 @@ th{text-align:left;color:#94a3b8;font-size:11px;text-transform:uppercase;padding
 td{padding:9px 8px;border-bottom:1px solid #0f172a;vertical-align:top}.b{padding:3px 10px;border-radius:99px;font-size:11px;font-weight:700}
 </style></head><body>
 <h1>🛡️ Davomat nazorati — ${tn.dateStr}</h1><div class="s">Har 60 soniyada yangilanadi · ${hhmmOf(tn.total)}</div>
-<a href="/admin/employees?key=${key}">👥 Xodimlarni boshqarish</a>
+<a href="/admin/employees?key=${key}">👥 Xodimlarni boshqarish</a> · <a href="/registered?key=${key}">✅ Ro'yxatdan o'tganlar</a>
 <div class="k"><div><b style="color:#10b981">${count('Ishda')}</b>Ishda</div><div><b style="color:#f43f5e">${count('Hududdan tashqarida')}</b>Tashqarida</div>
 <div><b style="color:#f59e0b">${count("Aloqa yo'q")}</b>Aloqa yo'q</div><div><b style="color:#94a3b8">${count('Kelmagan')}</b>Kelmagan</div>
 <div><b style="color:#38bdf8">${count('Ketdi')}</b>Ketgan</div></div>
 <div class="w"><table><tr><th>Xodim</th><th>Holat</th><th>Keldi</th><th>Ketdi</th><th>Ish vaqtida chiqishlar</th><th>Oxirgi signal</th></tr>${body}</table></div>
+</body></html>`);
+  });
+
+  // ====== RO'YXATDAN O'TGANLAR / O'TMAGANLAR ======
+  app.get('/registered', (req: Request, res: Response) => {
+    if (!isAdmin(req)) return res.status(401).send(keyForm('/registered'));
+    const key = encodeURIComponent(String(req.query.key));
+    const firstMap = new Map(
+      (db.prepare('SELECT jshr, ts FROM first_seen').all() as { jshr: string; ts: number }[]).map((r) => [r.jshr, r.ts])
+    );
+    const seenMap = new Map((db.prepare('SELECT * FROM last_seen').all() as Seen[]).map((r) => [r.jshr, r]));
+    const fmt = (ts: number) => {
+      const d = getTashkentTimeDetails(new Date(ts).toISOString());
+      return `${d.dateStr} ${d.timeStr}`;
+    };
+    const all = teachersOf();
+    const done = all.filter((t) => firstMap.has(t.jshr)).sort((a, b) => firstMap.get(a.jshr)! - firstMap.get(b.jshr)!);
+    const notDone = all.filter((t) => !firstMap.has(t.jshr)).sort((a, b) => a.fio.localeCompare(b.fio));
+    const rowsDone = done
+      .map((t, i) => {
+        const sn = seenMap.get(t.jshr);
+        return `<tr><td>${i + 1}</td><td><b>${esc(t.fio)}</b><div class="s">${esc(t.lavozim)}</div></td>
+        <td>${fmt(firstMap.get(t.jshr)!)}</td><td>${sn ? minsOf(Date.now() - sn.ts) + ' daq. oldin' : '-'}</td></tr>`;
+      })
+      .join('');
+    const rowsNot = notDone
+      .map((t, i) => `<tr><td>${i + 1}</td><td><b>${esc(t.fio)}</b><div class="s">${esc(t.lavozim)}</div></td></tr>`)
+      .join('');
+    res.send(`<!doctype html><html lang="uz"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Ro'yxatdan o'tganlar</title><style>
+body{margin:0;background:#050816;color:#e2e8f0;font-family:system-ui,sans-serif;padding:16px}
+h1{font-size:18px;margin:0 0 4px}h2{font-size:15px;margin:22px 0 8px}.s{font-size:11px;color:#64748b}a{color:#38bdf8;font-size:13px}
+.k{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.k div{background:#0f172a;border:1px solid #1e293b;border-radius:14px;padding:10px 14px}
+.k b{font-size:20px;display:block}.w{overflow-x:auto}table{border-collapse:collapse;width:100%;min-width:420px;font-size:13px}
+th{text-align:left;color:#94a3b8;font-size:11px;text-transform:uppercase;padding:8px;border-bottom:1px solid #1e293b}
+td{padding:9px 8px;border-bottom:1px solid #0f172a;vertical-align:top}
+</style></head><body>
+<h1>✅ Ro'yxatdan o'tganlar</h1>
+<div class="s">Ilovani ochib, profil kiritgan va birinchi GPS signali (yoki davomati) serverga kelgan xodimlar</div>
+<a href="/monitor?key=${key}">🛡️ Nazorat</a> · <a href="/admin/employees?key=${key}">👥 Xodimlar</a>
+<div class="k"><div><b style="color:#10b981">${done.length}</b>O'tgan</div><div><b style="color:#f43f5e">${notDone.length}</b>O'tmagan</div><div><b>${all.length}</b>Jami</div></div>
+<h2>O'tganlar (birinchi marta kirgan vaqti bilan)</h2>
+<div class="w"><table><tr><th>#</th><th>Xodim</th><th>Birinchi kirgan</th><th>Oxirgi signal</th></tr>${rowsDone || '<tr><td colspan="4" class="s">Hali hech kim yo\'q</td></tr>'}</table></div>
+<h2>O'tmaganlar</h2>
+<div class="w"><table><tr><th>#</th><th>Xodim</th></tr>${rowsNot || '<tr><td colspan="2" class="s">Hamma o\'tgan 🎉</td></tr>'}</table></div>
 </body></html>`);
   });
 
@@ -833,6 +887,7 @@ ${msg ? `<div class="msg">${esc(msg)}</div>` : ''}
       (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1',
       synced_from_offline ? 1 : 0
     );
+    db.prepare('INSERT OR IGNORE INTO first_seen (jshr, ts) VALUES (?, ?)').run(cleanJshr, Date.now());
     scheduleBackup('davomat');
 
     const actionEmoji = normalizedAction === 'Keldi' ? '🟢' : '🔴';
