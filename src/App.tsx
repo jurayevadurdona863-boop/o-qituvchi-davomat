@@ -891,6 +891,29 @@ export default function App() {
     alert(ok ? `✅ Hisobot ${ok} ta adminga yuborildi (Excel'da ochiladi).` : '❌ Yuborilmadi:\n' + failed.join('\n'));
   }
 
+  // Server sahifalarini (jonli nazorat, xodimlar) kalit bilan ochish; kalit bir marta so'raladi va telefonda saqlanadi
+  function openServerPage(path: string) {
+    let k = '';
+    try {
+      k = localStorage.getItem('server_admin_key') || '';
+    } catch {}
+    if (!k) {
+      k = (window.prompt("Server admin kaliti (Render'dagi ADMIN_KEY):") || '').trim();
+      if (!k) return;
+      try {
+        localStorage.setItem('server_admin_key', k);
+      } catch {}
+    }
+    window.open(`${API}${path}?key=${encodeURIComponent(k)}`, '_blank');
+  }
+
+  function resetServerKey() {
+    try {
+      localStorage.removeItem('server_admin_key');
+    } catch {}
+    alert("Saqlangan kalit o'chirildi. Keyingi safar yangisini kiritasiz.");
+  }
+
   function handleAdminLogin(e: React.FormEvent) {
     e.preventDefault();
     if (ADMIN_PASSWORD && pass === ADMIN_PASSWORD) {
@@ -1150,23 +1173,39 @@ export default function App() {
                 </div>
 
                 {API && (
-                  <div className="grid grid-cols-2 gap-2">
-                    <a
-                      href={`${API}/monitor`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="py-3.5 rounded-2xl bg-gradient-to-r from-indigo-500 to-sky-500 text-white font-extrabold text-xs text-center active:scale-95 transition"
-                    >
-                      🌐 Jonli nazorat
-                    </a>
-                    <a
-                      href={`${API}/admin/employees`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="py-3.5 rounded-2xl bg-gradient-to-r from-teal-500 to-emerald-500 text-slate-950 font-extrabold text-xs text-center active:scale-95 transition"
-                    >
-                      👥 Xodimlar
-                    </a>
+                  <div className="space-y-1.5">
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => openServerPage('/monitor')}
+                        className="py-3.5 rounded-2xl bg-gradient-to-r from-indigo-500 to-sky-500 text-white font-extrabold text-xs text-center active:scale-95 transition"
+                      >
+                        🌐 Jonli nazorat
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openServerPage('/admin/employees')}
+                        className="py-3.5 rounded-2xl bg-gradient-to-r from-teal-500 to-emerald-500 text-slate-950 font-extrabold text-xs text-center active:scale-95 transition"
+                      >
+                        👥 Xodimlar
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => openServerPage('/registered')}
+                        className="py-2.5 rounded-2xl bg-white/10 text-slate-200 font-bold text-[11px] active:scale-95 transition"
+                      >
+                        ✅ Ro'yxatdan o'tganlar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={resetServerKey}
+                        className="py-2.5 rounded-2xl bg-white/5 text-slate-400 font-semibold text-[11px] active:scale-95 transition"
+                      >
+                        🔑 Kalitni o'zgartirish
+                      </button>
+                    </div>
                   </div>
                 )}
 
