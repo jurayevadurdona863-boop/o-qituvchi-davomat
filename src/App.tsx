@@ -212,8 +212,8 @@ let lastPingAt = 0;
 
 function sendPing() {
   if (!API || !lastKnown) return;
-  // GPS faqat harakatlanganda yangilanadi, shuning uchun joyida turgan xodim koordinatasi 10 daqiqagacha amal qiladi
-  if (Date.now() - lastKnown.ts > 10 * 60000) return;
+  // GPS faqat harakatlanganda yangilanadi, shuning uchun joyida turgan xodim (darsda, kabinetda) koordinatasi uzoq amal qiladi
+  if (Date.now() - lastKnown.ts > 3 * 60 * 60000) return;
   lastPingAt = Date.now();
   serverPost('/api/ping', {
     jshr: lastKnown.jshr,
@@ -655,6 +655,7 @@ export default function App() {
             },
             (loc: any, err: any) => {
               if (err) {
+                lastKnown = null; // GPS ishlamayapti: eski koordinatani yubormaymiz
                 if (err.code === 'NOT_AUTHORIZED') {
                   setGpsError('Joylashuv ruxsati berilmagan. Ilova sozlamalaridan «Joylashuv» ni yoqing.');
                   if (!askedSettings) {
