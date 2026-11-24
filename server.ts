@@ -280,6 +280,7 @@ const BACK_RADIUS = 450;      // shundan yaqin = qaytdi
 const MAX_ACCURACY = 150;     // GPS aniqligi bundan yomon bo'lsa, hisobga olinmaydi
 const CONFIRM_PINGS = 2;      // ketma-ket nechta signal tashqarida bo'lsa tasdiqlanadi
 const SIGNAL_LOST_MIN = 15;   // necha daqiqa signal bo'lmasa "aloqa uzildi"
+const SIGNAL_ALERTS = false;    // true bo'lsa, signal uzilganda ham xabar keladi (hozir faqat hududdan chiqish xabari)
 const WORK_START = 8 * 60 + 30;
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
@@ -693,6 +694,8 @@ td{padding:9px 8px;border-bottom:1px solid #0f172a;vertical-align:top}
     const outs = new Set(
       (db.prepare("SELECT DISTINCT jshr FROM attendance WHERE date_str = ? AND action_type = 'Ketdi'").all(tn.dateStr) as { jshr: string }[]).map((r) => r.jshr)
     );
+
+    if (!SIGNAL_ALERTS) return;
 
     for (const r of ins) {
       if (outs.has(r.jshr)) continue;
