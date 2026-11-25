@@ -253,6 +253,43 @@ async function scheduleReminders() {
   }
 }
 
+/** Rasm yaroqliligini tekshiradi: juda qorong'i yoki bir xil rangli (yuzsiz) rasmni rad etadi. */
+async function checkPhotoUsable(dataUrl: string): Promise<void> {
+  const img = new Image();
+  await new Promise<void>((res, rej) => {
+    img.onload = () => res();
+    img.onerror = () => rej(new Error('LOAD'));
+    img.src = dataUrl;
+  });
+  const S = 48;
+  const c = document.createElement('canvas');
+  c.width = S;
+  c.height = S;
+  const ctx = c.getContext('2d');
+  if (!ctx) return;
+  ctx.drawImage(img, 0, 0, S, S);
+  const d = ctx.getImageData(0, 0, S, S).data;
+  let sum = 0;
+  let sum2 = 0;
+  const n = S * S;
+  for (let i = 0; i < d.length; i += 4) {
+    const y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    sum += y;
+    sum2 += y * y;
+  }
+  const mean = sum / n;
+  const sd = Math.sqrt(Math.max(0, sum2 / n - mean * mean));
+  if (mean < 35) throw new Error('DARK');
+  if (sd < 12) throw new Error('FLAT');
+}
+
+function photoErrorText(e: any): string {
+  const m = e?.message;
+  if (m === 'DARK') return "📷 Rasm juda qorong'i. Yorug'roq joyda, yuzingiz kameraga ko'ringan holda qayta oling.";
+  if (m === 'FLAT') return "📷 Rasmda yuz ko'rinmayapti (bir xil rangli rasm). Yuzingizni kameraga qaratib qayta oling.";
+  return 'Kamera ochilmadi yoki bekor qilindi. Kamera ruxsatini tekshiring.\n' + (m || '');
+}
+
 /** GPS yangilanganda chaqiriladi; server har daqiqada signal oladi. */
 function pingServer(jshr: string | undefined, lat: number, lng: number, acc?: number) {
   if (!API || !jshr) return;
@@ -750,6 +787,12 @@ export default function App() {
       saveToGallery: false,
     });
     if (!photo.dataUrl) throw new Error('Rasm olinmadi');
+    try {
+      await checkPhotoUsable(photo.dataUrl);
+    } catch (e: any) {
+      // faqat qorong'i/bir xil rasm rad etiladi; tekshiruvning o'zi xato bersa, rasm qabul qilinadi
+      if (e?.message === 'DARK' || e?.message === 'FLAT') throw e;
+    }
     return photo.dataUrl;
   }
 
@@ -787,7 +830,7 @@ export default function App() {
       try {
         photo = await takeLivePhoto();
       } catch (e: any) {
-        alert('Kamera ochilmadi yoki bekor qilindi. Kamera ruxsatini tekshiring.\n' + (e?.message || ''));
+        alert(photoErrorText(e));
         return;
       }
 
@@ -823,8 +866,8 @@ export default function App() {
   async function pickProfilePhoto() {
     try {
       setPhotoInput(await takeLivePhoto());
-    } catch {
-      alert('Rasm olinmadi. Kamera ruxsatini tekshiring.');
+    } catch (e: any) {
+      alert(photoErrorText(e));
     }
   }
 
