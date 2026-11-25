@@ -275,8 +275,8 @@ type DB = InstanceType<typeof Database>;
 interface Exc { id: number; jshr: string; fio: string; date_str: string; kind: string; left_ts: number; back_ts: number | null; max_distance: number }
 interface Seen { jshr: string; ts: number; lat: number; lng: number; distance: number; accuracy: number | null }
 
-const OUT_RADIUS = 600;       // shundan uzoq = hududdan chiqdi
-const BACK_RADIUS = 450;      // shundan yaqin = qaytdi
+const OUT_RADIUS = 500;       // shundan uzoq = hududdan chiqdi
+const BACK_RADIUS = 400;      // shundan yaqin = qaytdi
 const MAX_ACCURACY = 150;     // GPS aniqligi bundan yomon bo'lsa, hisobga olinmaydi
 const CONFIRM_PINGS = 2;      // ketma-ket nechta signal tashqarida bo'lsa tasdiqlanadi
 const SIGNAL_LOST_MIN = 15;   // necha daqiqa signal bo'lmasa "aloqa uzildi"
