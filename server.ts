@@ -255,6 +255,33 @@ function scheduleBackup(reason: string, delayMs = 90000) {
   }, delayMs);
 }
 
+// ====== ILOVADAN TELEGRAMGA YUBORISH (token faqat shu serverda turadi) ======
+async function tgCall(
+  method: string,
+  chatId: string,
+  fields: Record<string, string>,
+  file?: { field: string; name: string; type: string; data: Buffer }
+) {
+  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`;
+  let r: Response;
+  if (file) {
+    const fd = new FormData();
+    fd.append('chat_id', chatId);
+    for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+    fd.append(file.field, new Blob([new Uint8Array(file.data)], { type: file.type }), file.name);
+    r = await fetch(url, { method: 'POST', body: fd });
+  } else {
+    r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, ...fields }),
+    });
+  }
+  const j: any = await r.json();
+  if (!j.ok) throw new Error(j.description || 'Telegram xatosi');
+}
+const notifyHits = new Map<string, number[]>();
+
 // Masofani hisoblash (Haversine)
 function calculateDistanceMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371000;
@@ -744,6 +771,84 @@ async function startServer() {
   });
 
   // Nazorat tizimini ulash (/api/ping, /monitor, kunlik hisobot)
+  // ====== ILOVA -> ADMINLAR (xabar va rasm). Token ilovada emas, shu yerda ======
+  app.post('/api/notify', async (req: Request, res: Response) => {
+    const { jshr, text, photo } = req.body || {};
+    const cleanJshr = String(jshr || '').trim();
+    if (!cleanJshr || !getTeachers().some((t) => t.jshr === cleanJshr)) {
+      return res.status(403).json({ success: false, error: 'Xodim bazada topilmadi' });
+    }
+    if (typeof text !== 'string' || !text.trim() || text.length > 3800) {
+      return res.status(400).json({ success: false, error: "Xabar matni noto'g'ri" });
+    }
+    const nowMs = Date.now();
+    const hits = (notifyHits.get(cleanJshr) || []).filter((x) => nowMs - x < 3600000);
+    if (hits.length >= 60) {
+      return res.status(429).json({ success: false, error: "Juda ko'p so'rov, keyinroq urinib ko'ring" });
+    }
+    hits.push(nowMs);
+    notifyHits.set(cleanJshr, hits);
+    if (!TELEGRAM_BOT_TOKEN || TELEGRAM_CHAT_IDS.length === 0) {
+      return res.status(503).json({ success: false, error: 'Serverda bot sozlanmagan' });
+    }
+    let img: Buffer | null = null;
+    if (typeof photo === 'string' && photo.startsWith('data:image')) {
+      const m = photo.match(/^data:image\/(?:jpeg|jpg|png|webp);base64,([A-Za-z0-9+/=\s]+)$/);
+      if (!m) return res.status(400).json({ success: false, error: "Rasm formati noto'g'ri" });
+      img = Buffer.from(m[1], 'base64');
+      if (img.length > 1500000) return res.status(413).json({ success: false, error: 'Rasm juda katta' });
+    }
+    let sent = 0;
+    const failed: string[] = [];
+    let n = 0;
+    for (const chatId of TELEGRAM_CHAT_IDS) {
+      n++;
+      try {
+        if (img && text.length <= 1000) {
+          await tgCall('sendPhoto', chatId, { caption: text, parse_mode: 'HTML' }, { field: 'photo', name: 'xodim.jpg', type: 'image/jpeg', data: img });
+        } else if (img) {
+          await tgCall('sendPhoto', chatId, {}, { field: 'photo', name: 'xodim.jpg', type: 'image/jpeg', data: img });
+          await tgCall('sendMessage', chatId, { text, parse_mode: 'HTML' });
+        } else {
+          await tgCall('sendMessage', chatId, { text, parse_mode: 'HTML' });
+        }
+        sent++;
+      } catch (e: any) {
+        console.error(`/api/notify: admin #${n} ga yuborilmadi:`, e?.message || e);
+        failed.push(`admin #${n}: ${e?.message || 'xato'}`);
+      }
+    }
+    return res.json({ success: sent > 0, sent, failed });
+  });
+
+  // Admin ilovadagi "Excel hisobotini Telegramga yuborish" tugmasi uchun
+  app.post('/admin/send-csv', async (req: Request, res: Response) => {
+    if (!isAdmin(req)) return res.status(401).json({ success: false, error: "Admin kaliti noto'g'ri" });
+    const { filename, content, caption } = req.body || {};
+    if (typeof content !== 'string' || !content || content.length > 1500000) {
+      return res.status(400).json({ success: false, error: "Fayl mazmuni noto'g'ri" });
+    }
+    if (!TELEGRAM_BOT_TOKEN || TELEGRAM_CHAT_IDS.length === 0) {
+      return res.status(503).json({ success: false, error: 'Serverda bot sozlanmagan' });
+    }
+    const safeName = String(filename || 'davomat.csv').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80) || 'davomat.csv';
+    let sent = 0;
+    const failed: string[] = [];
+    let n = 0;
+    for (const chatId of TELEGRAM_CHAT_IDS) {
+      n++;
+      try {
+        await tgCall('sendDocument', chatId, { caption: String(caption || '').slice(0, 900) }, {
+          field: 'document', name: safeName, type: 'text/csv', data: Buffer.from('\uFEFF' + content, 'utf8'),
+        });
+        sent++;
+      } catch (e: any) {
+        failed.push(`admin #${n}: ${e?.message || 'xato'}`);
+      }
+    }
+    return res.json({ success: sent > 0, sent, failed });
+  });
+
   registerMonitoring(app, db, sendTelegramNotification, getTeachers);
 
   // ====== XODIMLARNI BOSHQARISH (faqat admin) ======
