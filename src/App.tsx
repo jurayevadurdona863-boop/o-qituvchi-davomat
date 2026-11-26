@@ -9,11 +9,6 @@ const BackgroundGeolocation = registerPlugin<any>('BackgroundGeolocation');
 
 // ====== SOZLAMALAR (maxfiy qiymatlar Codemagic/Render environment variables orqali) ======
 const env = ((import.meta as any).env || {}) as Record<string, string>;
-const BOT_TOKEN = env.VITE_TELEGRAM_BOT_TOKEN || '';
-const CHAT_IDS: string[] = (env.VITE_TELEGRAM_CHAT_IDS || '')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
 const ADMIN_PASSWORD = env.VITE_ADMIN_PASSWORD || '';
 const API = (env.VITE_API_URL || '').replace(/\/$/, ''); // Render server manzili
 
@@ -21,7 +16,7 @@ const CONFIG = {
   latitude: 38.971199,
   longitude: 66.70747,
   checkInRadiusMeters: 100,
-  alertBoundaryMeters: 600,
+  alertBoundaryMeters: 500,
 };
 
 type ActionType = 'keldi' | 'ketdi' | 'chiqdi';
@@ -101,53 +96,28 @@ function dataUrlToBlob(dataUrl: string): Blob {
   return new Blob([arr], { type: mime });
 }
 
-// ====== TELEGRAM ======
-async function tgSend(chatId: string, text: string, photo?: string) {
-  const base = `https://api.telegram.org/bot${BOT_TOKEN}/`;
-  let res: Response;
-  if (photo && photo.startsWith('data:image')) {
-    const fd = new FormData();
-    fd.append('chat_id', chatId);
-    fd.append('photo', dataUrlToBlob(photo), 'xodim.jpg');
-    fd.append('caption', text);
-    fd.append('parse_mode', 'HTML');
-    res = await fetch(base + 'sendPhoto', { method: 'POST', body: fd });
-  } else {
-    res = await fetch(base + 'sendMessage', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
-    });
-  }
-  const j = await res.json();
-  if (!j.ok) throw new Error(j.description || 'Telegram xatosi');
-}
-
-async function tgSendDocument(chatId: string, filename: string, content: string, caption: string) {
-  const fd = new FormData();
-  fd.append('chat_id', chatId);
-  fd.append('document', new Blob(['﻿' + content], { type: 'text/csv' }), filename);
-  fd.append('caption', caption);
-  const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, { method: 'POST', body: fd });
-  const j = await res.json();
-  if (!j.ok) throw new Error(j.description || 'Telegram xatosi');
-}
-
+// ====== TELEGRAM (ilova botga to'g'ridan-to'g'ri emas, SERVER orqali yuboradi: token ilovada yo'q) ======
 async function sendToAdmins(text: string, photo?: string) {
-  const failed: string[] = [];
-  let sent = 0;
-  if (!BOT_TOKEN || CHAT_IDS.length === 0) {
-    return { sent: 0, failed: ['Bot tokeni yoki chat ID sozlanmagan'] };
-  }
-  for (const id of CHAT_IDS) {
-    try {
-      await tgSend(id, text, photo);
-      sent++;
-    } catch (e: any) {
-      failed.push(`${id}: ${e?.message || e}`);
+  if (!API) return { sent: 0, failed: ['Server manzili (VITE_API_URL) sozlanmagan'], drop: false };
+  const jshr = readJSON<UserProfile | null>('user_profile', null)?.pinfl || '';
+  if (!jshr) return { sent: 0, failed: ['Profil topilmadi'], drop: false };
+  try {
+    const r = await CapacitorHttp.post({
+      url: `${API}/api/notify`,
+      headers: { 'Content-Type': 'application/json' },
+      data: { jshr, text, photo },
+      connectTimeout: 30000,
+      readTimeout: 60000,
+    });
+    const d: any = r.data || {};
+    if (r.status >= 200 && r.status < 300) {
+      return { sent: Number(d.sent) || 0, failed: (Array.isArray(d.failed) ? d.failed : []).map(String), drop: false };
     }
+    // 400/413: so'rovning o'zi yaroqsiz, qayta urinish foyda bermaydi
+    return { sent: 0, failed: [String(d.error || `Server xatosi (${r.status})`)], drop: r.status === 400 || r.status === 413 };
+  } catch (e: any) {
+    return { sent: 0, failed: [e?.message || "Internet yo'q"], drop: false };
   }
-  return { sent, failed };
 }
 
 function enqueue(item: QueueItem) {
@@ -169,7 +139,7 @@ async function flushQueue() {
     const rest: QueueItem[] = [];
     for (const item of q) {
       const r = await sendToAdmins(item.text, item.photo);
-      if (r.sent === 0) rest.push(item);
+      if (r.sent === 0 && !r.drop) rest.push(item);
     }
     writeJSON('tg_queue', rest);
   } finally {
@@ -769,7 +739,7 @@ export default function App() {
   async function deliver(text: string, photo?: string): Promise<string> {
     const r = await sendToAdmins(text, photo);
     if (r.sent === 0) {
-      enqueue({ text, photo });
+      if (!r.drop) enqueue({ text, photo });
       return `⚠️ Botga yuborilmadi (internet yoki sozlama xatosi). Keyinroq avtomatik qayta yuboriladi.\n${r.failed.join('\n')}`;
     }
     if (r.failed.length) return `⚠️ Ba'zi adminlarga bormadi:\n${r.failed.join('\n')}`;
@@ -919,34 +889,56 @@ export default function App() {
 
   async function sendCsvToTelegram() {
     if (rows.length === 0) return alert("Yuboradigan yozuv yo'q.");
+    if (!API) return alert('Server manzili sozlanmagan.');
+    const k = getServerKey();
+    if (!k) return;
     const csv = rowsToCsv(rows);
     const name = `davomat_${showAll ? 'hammasi' : filterDate}.csv`;
-    let ok = 0;
-    const failed: string[] = [];
-    for (const id of CHAT_IDS) {
-      try {
-        await tgSendDocument(id, name, csv, `📊 Davomat hisoboti (${showAll ? 'hammasi' : filterDate})`);
-        ok++;
-      } catch (e: any) {
-        failed.push(`${id}: ${e?.message || e}`);
+    try {
+      const r = await CapacitorHttp.post({
+        url: `${API}/admin/send-csv`,
+        headers: { 'Content-Type': 'application/json', 'x-admin-key': k },
+        data: { filename: name, content: csv, caption: `📊 Davomat hisoboti (${showAll ? 'hammasi' : filterDate})` },
+        connectTimeout: 30000,
+        readTimeout: 60000,
+      });
+      const d: any = r.data || {};
+      if (r.status === 401) {
+        try {
+          localStorage.removeItem('server_admin_key');
+        } catch {}
+        return alert("Admin kaliti noto'g'ri. Qaytadan bosing va to'g'ri kalitni kiriting.");
       }
+      alert(
+        d.sent
+          ? `✅ Hisobot ${d.sent} ta adminga yuborildi (Excel'da ochiladi).`
+          : '❌ Yuborilmadi:\n' + (Array.isArray(d.failed) && d.failed.length ? d.failed.join('\n') : d.error || `Server xatosi (${r.status})`)
+      );
+    } catch (e: any) {
+      alert('❌ Yuborilmadi: ' + (e?.message || "internet yo'q"));
     }
-    alert(ok ? `✅ Hisobot ${ok} ta adminga yuborildi (Excel'da ochiladi).` : '❌ Yuborilmadi:\n' + failed.join('\n'));
   }
 
-  // Server sahifalarini (jonli nazorat, xodimlar) kalit bilan ochish; kalit bir marta so'raladi va telefonda saqlanadi
-  function openServerPage(path: string) {
+  // Server admin kaliti: bir marta so'raladi va telefonda saqlanadi
+  function getServerKey(): string {
     let k = '';
     try {
       k = localStorage.getItem('server_admin_key') || '';
     } catch {}
     if (!k) {
       k = (window.prompt("Server admin kaliti (Render'dagi ADMIN_KEY):") || '').trim();
-      if (!k) return;
+      if (!k) return '';
       try {
         localStorage.setItem('server_admin_key', k);
       } catch {}
     }
+    return k;
+  }
+
+  // Server sahifalarini (jonli nazorat, xodimlar) kalit bilan ochish
+  function openServerPage(path: string) {
+    const k = getServerKey();
+    if (!k) return;
     window.open(`${API}${path}?key=${encodeURIComponent(k)}`, '_blank');
   }
 
